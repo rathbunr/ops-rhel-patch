@@ -4,11 +4,12 @@
 # Performs a full patching cycle against RHEL 8/9/10 hosts registered to
 # Red Hat Satellite. Designed for use with AAP 2.6 self-service portal.
 #
-# Safely handles mixed inventories — Windows and non-RHEL hosts are
-# skipped gracefully via meta: end_host (no failure, no noise).
+# Safely handles mixed inventories — Windows, Satellite, and non-RHEL
+# hosts are skipped gracefully via meta: end_host.
 #
 # Incorporates enterprise best practices validated through multi-AI review:
 #   - OS gating for mixed inventory safety
+#   - Satellite server exclusion
 #   - Safe mount detection with fallback to root
 #   - needs-restarting for reboot detection
 #   - Optional autoremove (disabled by default)
@@ -34,7 +35,7 @@
 #   - Hosts registered to Satellite with valid subscription
 #
 # Author: Robert Rathbun
-# Version: 1.1.0
+# Version: 1.2.0
 # Date: 2026-05-20
 
 - name: Patch RHEL Hosts
@@ -72,7 +73,7 @@
   pre_tasks:
 
     #####################################################################
-    # 00 - OS gating (skip non-RHEL hosts gracefully)
+    # 00 - OS and role gating (skip non-RHEL and Satellite hosts)
     #####################################################################
 
     - name: "Gate | Gather OS facts only"
@@ -98,7 +99,7 @@
     - name: "Gate | Skip Satellite servers"
       ansible.builtin.meta: end_host
       when: sat_check.rc == 0
-      
+
   tasks:
 
     #####################################################################
@@ -123,30 +124,11 @@
         name: yum-utils
         state: present
 
-    - name: "Pre-patch | Determine /boot mount point"
+    - name: "Pre-patch | Detect mount points"
       ansible.builtin.set_fact:
-        boot_mount: >-
-          {{
-            (ansible_mounts | selectattr('mount', 'equalto', '/boot') | list | first)
-            | default(
-              ansible_mounts | selectattr('mount', 'equalto', '/') | list | first
-            )
-          }}
-
-    - name: "Pre-patch | Determine / mount point"
-      ansible.builtin.set_fact:
-        root_mount: >-
-          {{ ansible_mounts | selectattr('mount', 'equalto', '/') | list | first }}
-
-    - name: "Pre-patch | Determine /var mount point"
-      ansible.builtin.set_fact:
-        var_mount: >-
-          {{
-            (ansible_mounts | selectattr('mount', 'equalto', '/var') | list | first)
-            | default(
-              ansible_mounts | selectattr('mount', 'equalto', '/') | list | first
-            )
-          }}
+        boot_mount: "{{ (ansible_mounts | selectattr('mount', 'equalto', '/boot') | list | first) | default(ansible_mounts | selectattr('mount', 'equalto', '/') | list | first) }}"
+        root_mount: "{{ ansible_mounts | selectattr('mount', 'equalto', '/') | list | first }}"
+        var_mount: "{{ (ansible_mounts | selectattr('mount', 'equalto', '/var') | list | first) | default(ansible_mounts | selectattr('mount', 'equalto', '/') | list | first) }}"
 
     - name: "Pre-patch | Validate /boot free space"
       ansible.builtin.assert:
