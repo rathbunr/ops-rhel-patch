@@ -88,6 +88,17 @@
         ansible_distribution | default('') != 'RedHat'
         or ansible_distribution_major_version | default('') not in ['8', '9', '10']
 
+    - name: "Gate | Check if host is a Satellite server"
+      ansible.builtin.command:
+        cmd: rpm -q satellite
+      register: sat_check
+      changed_when: false
+      failed_when: false
+
+    - name: "Gate | Skip Satellite servers"
+      ansible.builtin.meta: end_host
+      when: sat_check.rc == 0
+      
   tasks:
 
     #####################################################################
