@@ -43,7 +43,7 @@
     # Disk space thresholds (300MB /boot matches RHEL default 960MB partition)
     min_boot_free_mb: 300
     min_root_free_gb: 5
-    min_var_free_gb: 5
+    min_var_free_gb: 3
 
     # Kernel retention (current + one fallback)
     installonly_limit: 2
