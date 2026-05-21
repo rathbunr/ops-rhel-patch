@@ -104,7 +104,7 @@
       ansible.builtin.raw: >-
         umask 77 &&
         mkdir -p /opt/ansible-remote/.ansible/tmp &&
-        chown svc_ansible_linux:svc_ansible_linux /opt/ansible-remote/.ansible/tmp
+        chown -R svc_ansible_linux:svc_ansible_linux /opt/ansible-remote
       become: true
       changed_when: false
 
