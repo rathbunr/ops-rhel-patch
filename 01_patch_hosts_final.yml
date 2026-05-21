@@ -100,6 +100,14 @@
       ansible.builtin.meta: end_host
       when: sat_check.rc == 0
 
+    - name: "Bootstrap | Ensure Ansible remote_tmp directory exists"
+      ansible.builtin.raw: >-
+        umask 77 &&
+        mkdir -p /opt/ansible-remote/.ansible/tmp &&
+        chown svc_ansible_linux:svc_ansible_linux /opt/ansible-remote/.ansible/tmp
+      become: true
+      changed_when: false
+
   tasks:
 
     #####################################################################
