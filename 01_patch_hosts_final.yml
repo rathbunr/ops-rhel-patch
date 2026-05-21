@@ -4,7 +4,11 @@
 # Performs a full patching cycle against RHEL 8/9/10 hosts registered to
 # Red Hat Satellite. Designed for use with AAP 2.6 self-service portal.
 #
+# Safely handles mixed inventories — Windows and non-RHEL hosts are
+# skipped gracefully via meta: end_host (no failure, no noise).
+#
 # Incorporates enterprise best practices validated through multi-AI review:
+#   - OS gating for mixed inventory safety
 #   - Safe mount detection with fallback to root
 #   - needs-restarting for reboot detection
 #   - Optional autoremove (disabled by default)
@@ -19,10 +23,10 @@
 #   - Package change capture for compliance evidence
 #
 # Usage:
-#   ansible-playbook 03_patch_hosts.yml -e target_hosts=all
-#   ansible-playbook 03_patch_hosts.yml -e target_hosts=RHEL_10_Lab
-#   ansible-playbook 03_patch_hosts.yml -e "target_hosts=all patch_security_only=true"
-#   ansible-playbook 03_patch_hosts.yml --check
+#   ansible-playbook 01_patch_hosts.yml -e target_hosts=all
+#   ansible-playbook 01_patch_hosts.yml -e target_hosts=RHEL_10_Lab
+#   ansible-playbook 01_patch_hosts.yml -e "target_hosts=all patch_security_only=true"
+#   ansible-playbook 01_patch_hosts.yml --check
 #
 # Requirements:
 #   - yum-utils (RHEL 10) or dnf-utils (RHEL 9) for needs-restarting
@@ -30,13 +34,13 @@
 #   - Hosts registered to Satellite with valid subscription
 #
 # Author: Robert Rathbun
-# Version: 1.0.0
-# Date: 2026-05-17
+# Version: 1.1.0
+# Date: 2026-05-20
 
 - name: Patch RHEL Hosts
   hosts: "{{ target_hosts | default('all') }}"
   become: true
-  gather_facts: true
+  gather_facts: false
   serial: "{{ patch_serial | default(0) }}"
 
   vars:
@@ -64,6 +68,25 @@
 
     # Patching log directory
     patch_log_dir: /var/log/patching
+
+  pre_tasks:
+
+    #####################################################################
+    # 00 - OS gating (skip non-RHEL hosts gracefully)
+    #####################################################################
+
+    - name: "Gate | Gather OS facts only"
+      ansible.builtin.setup:
+        gather_subset:
+          - distribution
+          - mounts
+          - date_time
+
+    - name: "Gate | Skip non-RHEL hosts"
+      ansible.builtin.meta: end_host
+      when: >-
+        ansible_distribution | default('') != 'RedHat'
+        or ansible_distribution_major_version | default('') not in ['8', '9', '10']
 
   tasks:
 
