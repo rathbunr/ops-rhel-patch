@@ -1,0 +1,366 @@
+---
+# RHEL Host Patching Playbook
+#
+# Performs a full patching cycle against RHEL 8/9/10 hosts registered to
+# Red Hat Satellite. Designed for use with AAP 2.6 self-service portal.
+#
+# Incorporates enterprise best practices validated through multi-AI review:
+#   - Safe mount detection with fallback to root
+#   - needs-restarting for reboot detection
+#   - Optional autoremove (disabled by default)
+#   - Optional security-only patching
+#   - Package exclusion support
+#   - Serial batching for fleet safety
+#   - Block/rescue error handling
+#   - Post-reboot service validation
+#   - ini_file for dnf.conf management
+#   - update_only to prevent accidental new installs
+#   - JSON audit trail for ITSM/SNOW integration
+#   - Package change capture for compliance evidence
+#
+# Usage:
+#   ansible-playbook 03_patch_hosts.yml -e target_hosts=all
+#   ansible-playbook 03_patch_hosts.yml -e target_hosts=RHEL_10_Lab
+#   ansible-playbook 03_patch_hosts.yml -e "target_hosts=all patch_security_only=true"
+#   ansible-playbook 03_patch_hosts.yml --check
+#
+# Requirements:
+#   - yum-utils (RHEL 10) or dnf-utils (RHEL 9) for needs-restarting
+#   - community.general collection for ini_file module
+#   - Hosts registered to Satellite with valid subscription
+#
+# Author: Robert Rathbun
+# Version: 1.0.0
+# Date: 2026-05-17
+
+- name: Patch RHEL Hosts
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  gather_facts: true
+  serial: "{{ patch_serial | default(0) }}"
+
+  vars:
+    # Disk space thresholds (300MB /boot matches RHEL default 960MB partition)
+    min_boot_free_mb: 300
+    min_root_free_gb: 5
+    min_var_free_gb: 5
+
+    # Kernel retention (current + one fallback)
+    installonly_limit: 2
+
+    # Patching behavior
+    patch_security_only: false
+    patch_update_only: true
+    enable_autoremove: false
+    patch_reboot_timeout: 1800
+
+    # Package exclusions (override per environment)
+    exclude_packages: []
+
+    # Critical services to validate post-reboot
+    critical_services:
+      - sshd
+      - chronyd
+
+    # Patching log directory
+    patch_log_dir: /var/log/patching
+
+  tasks:
+
+    #####################################################################
+    # 01 - Pre-patch validation
+    #####################################################################
+
+    - name: "Pre-patch | Ensure patching log directory exists"
+      ansible.builtin.file:
+        path: "{{ patch_log_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+
+    - name: "Pre-patch | Clean previous patching logs"
+      ansible.builtin.shell:
+        cmd: "rm -f {{ patch_log_dir }}/*.json"
+      changed_when: false
+
+    - name: "Pre-patch | Ensure needs-restarting is available"
+      ansible.builtin.dnf:
+        name: yum-utils
+        state: present
+
+    - name: "Pre-patch | Determine /boot mount point"
+      ansible.builtin.set_fact:
+        boot_mount: >-
+          {{
+            (ansible_mounts | selectattr('mount', 'equalto', '/boot') | list | first)
+            | default(
+              ansible_mounts | selectattr('mount', 'equalto', '/') | list | first
+            )
+          }}
+
+    - name: "Pre-patch | Determine / mount point"
+      ansible.builtin.set_fact:
+        root_mount: >-
+          {{ ansible_mounts | selectattr('mount', 'equalto', '/') | list | first }}
+
+    - name: "Pre-patch | Determine /var mount point"
+      ansible.builtin.set_fact:
+        var_mount: >-
+          {{
+            (ansible_mounts | selectattr('mount', 'equalto', '/var') | list | first)
+            | default(
+              ansible_mounts | selectattr('mount', 'equalto', '/') | list | first
+            )
+          }}
+
+    - name: "Pre-patch | Validate /boot free space"
+      ansible.builtin.assert:
+        that:
+          - boot_mount.size_available > (min_boot_free_mb | int * 1048576)
+        fail_msg: >-
+          /boot has insufficient free space.
+          Available: {{ (boot_mount.size_available / 1048576) | round(0) }}MB,
+          Required: {{ min_boot_free_mb }}MB
+
+    - name: "Pre-patch | Validate / free space"
+      ansible.builtin.assert:
+        that:
+          - root_mount.size_available > (min_root_free_gb | int * 1073741824)
+        fail_msg: >-
+          / has insufficient free space.
+          Available: {{ (root_mount.size_available / 1073741824) | round(1) }}GB,
+          Required: {{ min_root_free_gb }}GB
+
+    - name: "Pre-patch | Validate /var free space"
+      ansible.builtin.assert:
+        that:
+          - var_mount.size_available > (min_var_free_gb | int * 1073741824)
+        fail_msg: >-
+          /var has insufficient free space.
+          Available: {{ (var_mount.size_available / 1073741824) | round(1) }}GB,
+          Required: {{ min_var_free_gb }}GB
+
+    #####################################################################
+    # 02 - Capture pre-patch state
+    #####################################################################
+
+    - name: "Pre-patch | Capture current kernel version"
+      ansible.builtin.set_fact:
+        pre_patch_kernel: "{{ ansible_kernel }}"
+
+    - name: "Pre-patch | Gather installed package facts"
+      ansible.builtin.package_facts:
+        manager: auto
+
+    - name: "Pre-patch | Capture installed package count"
+      ansible.builtin.set_fact:
+        pre_patch_pkg_count: "{{ ansible_facts.packages | length }}"
+
+    - name: "Pre-patch | Record pre-patch state"
+      ansible.builtin.copy:
+        content: |
+          {
+            "host": "{{ inventory_hostname }}",
+            "phase": "pre-patch",
+            "timestamp": "{{ ansible_date_time.iso8601 }}",
+            "kernel": "{{ pre_patch_kernel }}",
+            "package_count": {{ pre_patch_pkg_count }},
+            "boot_free_mb": {{ (boot_mount.size_available / 1048576) | round(0) }},
+            "root_free_gb": {{ (root_mount.size_available / 1073741824) | round(1) }},
+            "var_free_gb": {{ (var_mount.size_available / 1073741824) | round(1) }}
+          }
+        dest: "{{ patch_log_dir }}/pre-patch-{{ ansible_date_time.iso8601_basic_short }}.json"
+        owner: root
+        group: root
+        mode: "0640"
+
+    #####################################################################
+    # 03 - Apply updates
+    #####################################################################
+
+    - name: "Patch | Apply updates"
+      block:
+
+        - name: "Patch | Update all packages"
+          ansible.builtin.dnf:
+            name: "*"
+            state: latest
+            update_only: "{{ patch_update_only }}"
+            security: "{{ patch_security_only }}"
+            exclude: "{{ exclude_packages | join(',') if exclude_packages | length > 0 else omit }}"
+          register: patch_result
+
+      rescue:
+
+        - name: "Patch | Record patch failure"
+          ansible.builtin.copy:
+            content: |
+              {
+                "host": "{{ inventory_hostname }}",
+                "phase": "patch-failure",
+                "timestamp": "{{ ansible_date_time.iso8601 }}",
+                "error": "{{ ansible_failed_result.msg | default('Unknown error') }}"
+              }
+            dest: "{{ patch_log_dir }}/patch-failure-{{ ansible_date_time.iso8601_basic_short }}.json"
+            owner: root
+            group: root
+            mode: "0640"
+
+        - name: "Patch | Fail with details"
+          ansible.builtin.fail:
+            msg: "Patching failed on {{ inventory_hostname }}. See {{ patch_log_dir }} for details."
+
+    #####################################################################
+    # 04 - Post-patch audit and cleanup
+    #####################################################################
+
+    - name: "Post-patch | Record updated packages"
+      ansible.builtin.copy:
+        content: "{{ patch_result.results | default([]) | to_nice_json }}"
+        dest: "{{ patch_log_dir }}/packages-updated-{{ ansible_date_time.iso8601_basic_short }}.json"
+        owner: root
+        group: root
+        mode: "0640"
+      when: patch_result.changed
+
+    - name: "Cleanup | Enforce kernel retention limit"
+      community.general.ini_file:
+        path: /etc/dnf/dnf.conf
+        section: main
+        option: installonly_limit
+        value: "{{ installonly_limit }}"
+        no_extra_spaces: true
+
+    - name: "Cleanup | Remove orphaned dependencies"
+      ansible.builtin.dnf:
+        autoremove: true
+      when: enable_autoremove | bool
+
+    - name: "Cleanup | Clean DNF cache"
+      ansible.builtin.command:
+        cmd: dnf clean all
+      changed_when: false
+
+    #####################################################################
+    # 05 - Post-patch validation and conditional reboot
+    #####################################################################
+
+    - name: "Post-patch | Check if reboot required"
+      ansible.builtin.command:
+        cmd: needs-restarting -r
+      register: reboot_check
+      failed_when: reboot_check.rc not in [0, 1]
+      changed_when: false
+
+    - name: "Post-patch | Set reboot fact"
+      ansible.builtin.set_fact:
+        reboot_required: "{{ reboot_check.rc == 1 }}"
+
+    - name: "Post-patch | Refresh package facts"
+      ansible.builtin.package_facts:
+        manager: auto
+
+    - name: "Post-patch | Capture post-patch package count"
+      ansible.builtin.set_fact:
+        post_patch_pkg_count: "{{ ansible_facts.packages | length }}"
+
+    - name: "Post-patch | Display patch summary"
+      ansible.builtin.debug:
+        msg:
+          - "============================================"
+          - "PATCH SUMMARY: {{ inventory_hostname }}"
+          - "============================================"
+          - "Kernel before:     {{ pre_patch_kernel }}"
+          - "Kernel running:    {{ ansible_kernel }}"
+          - "Reboot required:   {{ reboot_required }}"
+          - "Security only:     {{ patch_security_only }}"
+          - "Packages before:   {{ pre_patch_pkg_count }}"
+          - "Packages after:    {{ post_patch_pkg_count }}"
+          - "Exclusions:        {{ exclude_packages | join(', ') if exclude_packages | length > 0 else 'None' }}"
+          - "============================================"
+
+    - name: "Post-patch | Record post-patch state"
+      ansible.builtin.copy:
+        content: |
+          {
+            "host": "{{ inventory_hostname }}",
+            "phase": "post-patch",
+            "timestamp": "{{ ansible_date_time.iso8601 }}",
+            "kernel_before": "{{ pre_patch_kernel }}",
+            "kernel_running": "{{ ansible_kernel }}",
+            "reboot_required": {{ reboot_required | lower }},
+            "security_only": {{ patch_security_only | lower }},
+            "packages_before": {{ pre_patch_pkg_count }},
+            "packages_after": {{ post_patch_pkg_count }},
+            "exclusions": {{ exclude_packages | to_json }}
+          }
+        dest: "{{ patch_log_dir }}/post-patch-{{ ansible_date_time.iso8601_basic_short }}.json"
+        owner: root
+        group: root
+        mode: "0640"
+
+    #####################################################################
+    # 06 - Conditional reboot and post-reboot validation
+    #####################################################################
+
+    - name: "Reboot | Reboot if required"
+      ansible.builtin.reboot:
+        msg: "Reboot initiated by Ansible patching playbook"
+        reboot_timeout: "{{ patch_reboot_timeout }}"
+        post_reboot_delay: 30
+      when: reboot_required | bool
+
+    - name: "Reboot | Refresh facts after reboot"
+      ansible.builtin.setup:
+      when: reboot_required | bool
+
+    - name: "Reboot | Gather service facts"
+      ansible.builtin.service_facts:
+      when: reboot_required | bool
+
+    - name: "Reboot | Validate critical services are running"
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.services[item + '.service'].state == 'running'
+        fail_msg: "Critical service {{ item }} is not running after reboot on {{ inventory_hostname }}"
+      loop: "{{ critical_services }}"
+      when: reboot_required | bool
+
+    - name: "Reboot | Confirm running kernel after reboot"
+      ansible.builtin.debug:
+        msg:
+          - "============================================"
+          - "POST-REBOOT VALIDATION: {{ inventory_hostname }}"
+          - "============================================"
+          - "Running kernel:    {{ ansible_kernel }}"
+          - "Pre-patch kernel:  {{ pre_patch_kernel }}"
+          - "Kernel updated:    {{ ansible_kernel != pre_patch_kernel }}"
+          - "Critical services: All running"
+          - "============================================"
+      when: reboot_required | bool
+
+    #####################################################################
+    # 07 - Final state recording
+    #####################################################################
+
+    - name: "Complete | Record final state"
+      ansible.builtin.copy:
+        content: |
+          {
+            "host": "{{ inventory_hostname }}",
+            "phase": "complete",
+            "timestamp": "{{ ansible_date_time.iso8601 }}",
+            "kernel_before": "{{ pre_patch_kernel }}",
+            "kernel_after": "{{ ansible_kernel }}",
+            "rebooted": {{ reboot_required | lower }},
+            "security_only": {{ patch_security_only | lower }},
+            "packages_before": {{ pre_patch_pkg_count }},
+            "packages_after": {{ post_patch_pkg_count }},
+            "exclusions": {{ exclude_packages | to_json }},
+            "status": "success"
+          }
+        dest: "{{ patch_log_dir }}/patch-complete-{{ ansible_date_time.iso8601_basic_short }}.json"
+        owner: root
+        group: root
+        mode: "0640"
