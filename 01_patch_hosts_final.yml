@@ -56,7 +56,7 @@
     # Patching behavior
     patch_security_only: false
     patch_update_only: true
-    enable_autoremove: false
+    enable_autoremove: true
     patch_reboot_timeout: 1800
 
     # Package exclusions (override per environment)
