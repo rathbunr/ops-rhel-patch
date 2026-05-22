@@ -1,0 +1,96 @@
+---
+- name: Satellite Registration Compliance Check
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  vars:
+    registration_map:
+      "10":
+        activation_key: "AK-RHEL10"
+        content_view: "CV-RHEL10"
+        lifecycle_environment: "Library"
+        host_collection: "RHEL_10_Lab"
+      "9":
+        activation_key: "AK-RHEL9"
+        content_view: "CV-RHEL9"
+        lifecycle_environment: "Library"
+        host_collection: "RHEL_9_Lab"
+
+  tasks:
+    - name: Get all registered hosts
+      redhat.satellite.resource_info:
+        server_url: "{{ satellite_server_url }}"
+        username: "{{ satellite_username }}"
+        password: "{{ satellite_password }}"
+        validate_certs: "{{ satellite_validate_certs }}"
+        resource: hosts
+        organization: "{{ satellite_organization }}"
+        search: "managed = true"
+      register: satellite_hosts
+
+    - name: Display discovered hosts
+      ansible.builtin.debug:
+        msg: "Found {{ satellite_hosts.resources | length }} managed hosts"
+
+    - name: Evaluate registration compliance
+      ansible.builtin.set_fact:
+        compliance_results: >-
+          {{
+            compliance_results | default([]) + [{
+              'name': item.name,
+              'os': item.operatingsystem_name | default('Unknown'),
+              'os_major': item.operatingsystem_major | default('Unknown'),
+              'current_cv': item.content_facet_attributes.content_view.name | default('None'),
+              'expected_cv': registration_map[item.operatingsystem_major | default('Unknown')].content_view | default('Unknown'),
+              'current_le': item.content_facet_attributes.lifecycle_environment.name | default('None'),
+              'expected_le': registration_map[item.operatingsystem_major | default('Unknown')].lifecycle_environment | default('Unknown'),
+              'current_collection': (item.host_collections | default([]) | map(attribute='name') | list | first | default('None')),
+              'expected_collection': registration_map[item.operatingsystem_major | default('Unknown')].host_collection | default('Unknown'),
+              'content_source': item.content_facet_attributes.content_source_name | default('None'),
+              'last_checkin': item.subscription_facet_attributes.last_checkin | default('Never'),
+              'global_status': item.global_status_label | default('Unknown'),
+              'cv_compliant': (item.content_facet_attributes.content_view.name | default('None')) == (registration_map[item.operatingsystem_major | default('Unknown')].content_view | default('Unknown')),
+              'le_compliant': (item.content_facet_attributes.lifecycle_environment.name | default('None')) == (registration_map[item.operatingsystem_major | default('Unknown')].lifecycle_environment | default('Unknown')),
+              'collection_compliant': (item.host_collections | default([]) | map(attribute='name') | list | first | default('None')) == (registration_map[item.operatingsystem_major | default('Unknown')].host_collection | default('Unknown'))
+            }]
+          }}
+      loop: "{{ satellite_hosts.resources }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Display compliance report
+      ansible.builtin.debug:
+        msg:
+          - "============================================"
+          - "Host:              {{ item.name }}"
+          - "OS:                {{ item.os }}"
+          - "Content View:      {{ item.current_cv }} (expected: {{ item.expected_cv }}) {{ '✅' if item.cv_compliant else '❌' }}"
+          - "Lifecycle Env:     {{ item.current_le }} (expected: {{ item.expected_le }}) {{ '✅' if item.le_compliant else '❌' }}"
+          - "Host Collection:   {{ item.current_collection }} (expected: {{ item.expected_collection }}) {{ '✅' if item.collection_compliant else '❌' }}"
+          - "Content Source:    {{ item.content_source }}"
+          - "Last Checkin:      {{ item.last_checkin }}"
+          - "Global Status:     {{ item.global_status }}"
+          - "============================================"
+      loop: "{{ compliance_results }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Summary - Non-compliant hosts
+      ansible.builtin.debug:
+        msg:
+          - "============================================"
+          - "COMPLIANCE SUMMARY"
+          - "============================================"
+          - "Total hosts:       {{ compliance_results | length }}"
+          - "Compliant:         {{ compliance_results | selectattr('cv_compliant') | selectattr('le_compliant') | selectattr('collection_compliant') | list | length }}"
+          - "Non-compliant:     {{ compliance_results | rejectattr('cv_compliant') | list | length + compliance_results | rejectattr('le_compliant') | list | length + compliance_results | rejectattr('collection_compliant') | list | length }}"
+          - "============================================"
+
+    - name: List non-compliant hosts requiring remediation
+      ansible.builtin.debug:
+        msg: "REMEDIATION NEEDED: {{ item.name }} - CV: {{ item.cv_compliant }}, LE: {{ item.le_compliant }}, Collection: {{ item.collection_compliant }}"
+      loop: "{{ compliance_results }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: not item.cv_compliant or not item.le_compliant or not item.collection_compliant
