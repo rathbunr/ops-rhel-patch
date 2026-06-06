@@ -1,104 +1,103 @@
-# RHEL Patching Automation
+# ops-rhel-patch
 
-Ansible playbooks for automated RHEL 8/9/10 host registration compliance
-and patching against Red Hat Satellite, designed for AAP 2.6 self-service
-deployment.
+Ansible playbooks for automated RHEL 8/9/10 registration compliance and
+patching against Red Hat Satellite, orchestrated via AAP 2.7.
 
 ---
 
-## Project Layout
+## Repository layout
 
 ```
-.
-├── README.md
-├── requirements.yml
-├── ansible.cfg
+ops-rhel-patch/
+├── ansible.cfg                        # Ansible configuration
+├── requirements.yml                   # Collection dependencies
+├── CODEOWNERS                         # Review requirements
+├── .gitignore                         # Excludes vault password, logs, etc.
+├── .vault_pass.example                # Template for local vault password file
+│
+├── playbooks/
+│   ├── 01_registration_compliance.yml # Satellite registration compliance check
+│   └── 02_patch_hosts.yml             # Full RHEL patching cycle
+│
 ├── inventory/
-│   ├── hosts.yml
-│   └── group_vars/
-│       └── all.yml
-└── playbooks/
-    ├── 01_reg_comply.yml       # Registration compliance check
-    └── 02_patch_hosts.yml      # Fleet patching
+│   ├── hosts.yml                      # Static inventory scaffold
+│   ├── group_vars/
+│   │   └── all.yml                    # All variable defaults (non-secret)
+│   └── host_vars/                     # Per-host overrides (if needed)
+│
+├── vault/
+│   └── vault.yml                      # Encrypted secrets (ansible-vault)
+│
+├── vars/                              # Additional variable files (env-specific)
+├── files/                             # Static files for copy tasks
+└── templates/                         # Jinja2 templates
 ```
 
 ---
 
-## Host Discovery (Prerequisite)
+## Quick start
 
-These playbooks operate against a known inventory. Host discovery is handled
-externally through one or more of the following sources:
+```bash
+# 1. Install collections
+ansible-galaxy collection install -r requirements.yml
 
-| Source | Method | Notes |
-|---|---|---|
-| **Red Hat Satellite** | `redhat.satellite.resource_info` module or `redhat.satellite.foreman` dynamic inventory plugin | Primary source of truth for registered hosts |
-| **Active Directory** | `microsoft.ad` inventory plugin querying computer objects | Finds domain-joined RHEL hosts that may not be registered to Satellite |
-| **Red Hat Insights** | Hosts registered to Insights auto-populate in Satellite inventory | Passive discovery, no scanning required |
+# 2. Set up vault password file (never commit this)
+cp .vault_pass.example .vault_pass
+echo "your-vault-password" > .vault_pass
+chmod 600 .vault_pass
 
-Network scanning (e.g., NMAP) is intentionally excluded. Enterprise
-micro-segmentation policies block port scanning and trigger NAC alerts.
-All discovery is API-driven.
+# 3. Encrypt the vault
+ansible-vault encrypt vault/vault.yml
+
+# 4. Run registration compliance check
+ansible-playbook playbooks/01_registration_compliance.yml
+
+# 5. Patch all hosts
+ansible-playbook playbooks/02_patch_hosts.yml -e target_hosts=all
+```
 
 ---
 
 ## Playbooks
 
-### 01 — Registration Compliance
+### 01 — Registration compliance
 
-Validates all managed hosts are properly registered to Satellite with the
-correct content view, lifecycle environment, and host collection for their
-RHEL major version.
+Validates all managed hosts against Satellite for correct content view,
+lifecycle environment, and host collection per RHEL major version.
 
 ```bash
-ansible-playbook playbooks/01_reg_comply.yml -i inventory/
+ansible-playbook playbooks/01_registration_compliance.yml
 ```
 
-**What it checks per host:**
+Outputs a per-host pass/fail report and a summary of non-compliant hosts
+requiring remediation.
 
-| Check | Expected State |
-|---|---|
-| Content View | Matches RHEL version (e.g., CV-RHEL10 for RHEL 10) |
-| Lifecycle Environment | Library (rapid patching model) |
-| Host Collection | Matches RHEL version (e.g., RHEL_10_Lab) |
-| Global Status | OK or Warning |
+### 02 — Fleet patching
 
-**Output:** Per-host compliance report with pass/fail indicators and a
-summary showing compliant vs non-compliant counts. Non-compliant hosts
-are flagged for remediation.
-
-**Configuration:** Edit the `registration_map` variable in the playbook
-to match your Satellite content view and activation key naming conventions.
-
----
-
-### 02 — Fleet Patching
-
-Full patching cycle: pre-validation, update, cleanup, reboot, post-validation.
+Full patching cycle with pre-validation, update, cleanup, reboot, and
+post-reboot service validation.
 
 ```bash
 # Patch all hosts
-ansible-playbook playbooks/02_patch_hosts.yml -i inventory/ -e target_hosts=all
+ansible-playbook playbooks/02_patch_hosts.yml -e target_hosts=all
 
-# Patch specific host group or collection
-ansible-playbook playbooks/02_patch_hosts.yml -i inventory/ -e target_hosts=RHEL_10_Lab
+# Patch a specific host group
+ansible-playbook playbooks/02_patch_hosts.yml -e target_hosts=RHEL_10_Lab
 
-# Patch single host
-ansible-playbook playbooks/02_patch_hosts.yml -i inventory/ -l zabbix-01.example.com
+# Security updates only
+ansible-playbook playbooks/02_patch_hosts.yml -e "target_hosts=all patch_security_only=true"
 
-# Security-only patching
-ansible-playbook playbooks/02_patch_hosts.yml -i inventory/ -e "target_hosts=all patch_security_only=true"
+# Exclude packages
+ansible-playbook playbooks/02_patch_hosts.yml -e '{"target_hosts":"all","exclude_packages":["kernel*","podman*"]}'
 
-# Exclude specific packages
-ansible-playbook playbooks/02_patch_hosts.yml -i inventory/ -e '{"target_hosts": "all", "exclude_packages": ["kernel*", "podman*"]}'
-
-# Serial batching for large fleets
-ansible-playbook playbooks/02_patch_hosts.yml -i inventory/ -e "target_hosts=all patch_serial=10"
+# Serial batching (10 hosts at a time)
+ansible-playbook playbooks/02_patch_hosts.yml -e "target_hosts=all patch_serial=10"
 
 # Dry run
-ansible-playbook playbooks/02_patch_hosts.yml -i inventory/ -e target_hosts=all --check
+ansible-playbook playbooks/02_patch_hosts.yml -e target_hosts=all --check
 ```
 
-**Pipeline:**
+**Patching pipeline:**
 
 ```
 Pre-patch validation (disk space, subscription, yum-utils)
@@ -122,140 +121,92 @@ Record final state (JSON audit log)
 
 ## Variables
 
-### Registration Compliance (01)
-
-| Variable | Description |
-|---|---|
-| `satellite_server_url` | Satellite API URL |
-| `satellite_username` | Satellite admin username |
-| `satellite_password` | Satellite admin password |
-| `satellite_validate_certs` | Validate Satellite SSL certificate |
-| `satellite_organization` | Satellite organization name |
-
-### Fleet Patching (02)
+All defaults are defined in `inventory/group_vars/all.yml`. Secrets
+are in `vault/vault.yml` and referenced via `vault_*` prefixed variables.
 
 | Variable | Default | Description |
 |---|---|---|
-| `target_hosts` | `all` | Host pattern, group, or collection to patch |
-| `patch_serial` | `0` (all at once) | Number of hosts to patch simultaneously |
-| `patch_security_only` | `false` | Apply only security updates |
+| `patch_serial` | `0` | Hosts to patch simultaneously (0 = all) |
+| `patch_security_only` | `false` | Apply security updates only |
 | `patch_update_only` | `true` | Prevent accidental new package installs |
-| `enable_autoremove` | `false` | Remove orphaned dependencies (risky in enterprise) |
-| `exclude_packages` | `[]` | List of packages/patterns to exclude |
-| `installonly_limit` | `2` | Kernel retention count (current + fallback) |
+| `enable_autoremove` | `false` | Remove orphaned dependencies |
+| `exclude_packages` | `[]` | Packages/patterns to exclude |
+| `installonly_limit` | `2` | Kernel retention count |
 | `min_boot_free_mb` | `300` | Minimum free space on /boot |
 | `min_root_free_gb` | `5` | Minimum free space on / |
-| `min_var_free_gb` | `5` | Minimum free space on /var |
-| `patch_reboot_timeout` | `1800` | Seconds to wait for reboot completion |
-| `critical_services` | `[sshd, chronyd]` | Services to validate after reboot |
-| `patch_log_dir` | `/var/log/patching` | Directory for JSON audit logs |
+| `min_var_free_gb` | `3` | Minimum free space on /var |
+| `patch_reboot_timeout` | `1800` | Seconds to wait for reboot |
+| `critical_services` | `[sshd, chronyd]` | Services validated post-reboot |
+| `patch_log_dir` | `/var/log/patching` | JSON audit log directory |
 
 ---
 
-## Audit Trail
+## Vault
+
+Secrets are managed with Ansible Vault. The vault file references variables
+prefixed with `vault_` which are mapped to their runtime names in
+`inventory/group_vars/all.yml`.
+
+```bash
+# Encrypt
+ansible-vault encrypt vault/vault.yml
+
+# Edit in place
+ansible-vault edit vault/vault.yml
+
+# View without decrypting to disk
+ansible-vault view vault/vault.yml
+```
+
+**Never commit a decrypted vault file or `.vault_pass`.**
+
+---
+
+## Audit trail
 
 Each patching run produces JSON logs in `/var/log/patching/` on each host.
-Previous run logs are cleaned at the start of each new run.
 
 | File | Contents |
 |---|---|
-| `pre-patch-*.json` | Pre-patch state: kernel, package count, disk space |
-| `packages-updated-*.json` | List of packages installed/removed |
-| `post-patch-*.json` | Post-patch state: kernel, reboot status |
-| `patch-complete-*.json` | Final validation: success/failure |
-| `patch-failure-*.json` | Error details (only on failure) |
+| `pre-patch-*.json` | Kernel, package count, disk space before patching |
+| `packages-updated-*.json` | Packages installed or removed |
+| `post-patch-*.json` | Kernel, reboot status after patching |
+| `patch-complete-*.json` | Final validation result |
+| `patch-failure-*.json` | Error details (failure only) |
 
-These logs are structured for consumption by ITSM workflows (e.g.,
-ServiceNow `servicenow.itsm` collection) for automated change ticket
-creation and compliance evidence.
+Logs are structured for ITSM integration via the `servicenow.itsm` collection.
 
 ---
 
-## AAP Integration
+## AAP integration
 
-### Job Templates
-
-| Template Name | Playbook | Trigger | Notes |
-|---|---|---|---|
-| Registration Compliance | `01_reg_comply.yml` | Scheduled / On-demand | Monthly recommended |
-| Patch RHEL Hosts | `02_patch_hosts.yml` | On-demand / Scheduled | Survey for target_hosts |
-| Security Patch Only | `02_patch_hosts.yml` | On-demand | Extra var: patch_security_only=true |
-
-### Self-Service Portal
-
-Deploy patching templates via AAP Platform Gateway for self-service
-kiosk access. System owners see only their authorized templates with
-RBAC-scoped host visibility.
+| Job Template | Playbook | Trigger |
+|---|---|---|
+| Registration Compliance | `01_registration_compliance.yml` | Scheduled / on-demand |
+| Patch RHEL Hosts | `02_patch_hosts.yml` | On-demand / scheduled |
+| Security Patch Only | `02_patch_hosts.yml` | On-demand (`patch_security_only=true`) |
 
 Survey parameters for the patching template:
 
 | Parameter | Type | Description |
 |---|---|---|
 | `target_hosts` | Text | Host group, collection, or search query |
-| `patch_security_only` | Boolean | Security-only update |
+| `patch_security_only` | Boolean | Security updates only |
 | `exclude_packages` | Text | Comma-separated package exclusions |
+| `patch_serial` | Integer | Hosts to patch simultaneously |
 
 ---
 
-## Requirements
+## Validated against
 
-### Collections
-
-```yaml
-collections:
-  - name: community.general
-    version: ">=8.0.0"
-  - name: redhat.satellite
-    version: ">=5.0.0"
-```
-
-### Host Requirements
-
-- RHEL 8, 9, or 10 registered to Red Hat Satellite
-- `yum-utils` (RHEL 10) or `dnf-utils` (RHEL 8/9) for `needs-restarting`
-- Valid subscription and enabled repositories
-
----
-
-## Design Decisions
-
-| Decision | Rationale |
-|---|---|
-| `installonly_limit=2` | One fallback kernel. Balances /boot space against rollback safety. Increase to 3 for critical/FIPS systems. |
-| `min_boot_free_mb=300` | Calibrated for RHEL default 960MB /boot partition with 2 kernels. |
-| `autoremove` disabled | Can remove operationally required packages in enterprise environments. Enable explicitly when safe. |
-| `needs-restarting` over kernel comparison | `package_facts` kernel version doesn't include full release string, making direct comparison unreliable. |
-| `update_only=true` | Prevents wildcard `dnf update` from accidentally installing new packages. |
-| Logs cleaned each run | Fresh audit trail per cycle. Historical evidence belongs in ITSM/SIEM, not local files. |
-| No NMAP discovery | Enterprise micro-segmentation blocks port scanning. All discovery is API-driven. |
-
----
-
-## Validated Against
-
-- Red Hat Satellite 6.19.0
-- RHEL 10.1 (kernel 6.12.0)
-- RHEL 9.7 (kernel 5.14.0)
+- Red Hat Satellite 6.19
+- RHEL 10.1 / kernel 6.12.0
+- RHEL 9.7 / kernel 5.14.0
 - Ansible Core 2.16
-- AAP 2.6 (containerized)
-
----
-
-## Future Enhancements
-
-- ServiceNow ITSM integration for automated change ticket lifecycle
-- Pre-patch Hyper-V checkpoint creation via WinRM
-- OpenSCAP/CIS post-patch validation
-- CVE remediation evidence collection
-- Windows patching via MECM API integration
-- SatShell interactive menu for Satellite operations
+- AAP 2.7 (containerized)
 
 ---
 
 ## Author
 
 Robert Rathbun
-
-## License
-
-MIT

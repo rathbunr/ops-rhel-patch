@@ -1,0 +1,8 @@
+# ---------------------------------------------------------------------------
+# CODEOWNERS
+# All changes require review from the infrastructure team lead
+# ---------------------------------------------------------------------------
+*                   @rathbunr
+playbooks/          @rathbunr
+vault/              @rathbunr
+inventory/          @rathbunr

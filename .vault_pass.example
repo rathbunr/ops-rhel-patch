@@ -1,0 +1,12 @@
+# ---------------------------------------------------------------------------
+# .vault_pass.example
+#
+# Copy this file to .vault_pass and populate with your vault password.
+# .vault_pass is in .gitignore and must NEVER be committed.
+#
+# Usage:
+#   cp .vault_pass.example .vault_pass
+#   echo "your-vault-password" > .vault_pass
+#   chmod 600 .vault_pass
+# ---------------------------------------------------------------------------
+CHANGEME

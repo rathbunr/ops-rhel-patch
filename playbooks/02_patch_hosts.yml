@@ -1,82 +1,39 @@
 ---
-# RHEL Host Patching Playbook
+# ---------------------------------------------------------------------------
+# 02 - RHEL Host Patching
 #
-# Performs a full patching cycle against RHEL 8/9/10 hosts registered to
-# Red Hat Satellite. Designed for use with AAP 2.6 self-service portal.
-#
-# Safely handles mixed inventories — Windows, Satellite, and non-RHEL
-# hosts are skipped gracefully via meta: end_host.
-#
-# Incorporates enterprise best practices validated through multi-AI review:
-#   - OS gating for mixed inventory safety
-#   - Satellite server exclusion
-#   - Safe mount detection with fallback to root
-#   - needs-restarting for reboot detection
-#   - Optional autoremove (disabled by default)
-#   - Optional security-only patching
-#   - Package exclusion support
-#   - Serial batching for fleet safety
-#   - Block/rescue error handling
-#   - Post-reboot service validation
-#   - ini_file for dnf.conf management
-#   - update_only to prevent accidental new installs
-#   - JSON audit trail for ITSM/SNOW integration
-#   - Package change capture for compliance evidence
+# Full patching cycle: pre-validation, update, cleanup, reboot,
+# post-validation. Handles mixed inventories gracefully — non-RHEL
+# and Satellite server hosts are skipped via meta: end_host.
 #
 # Usage:
-#   ansible-playbook 01_patch_hosts.yml -e target_hosts=all
-#   ansible-playbook 01_patch_hosts.yml -e target_hosts=RHEL_10_Lab
-#   ansible-playbook 01_patch_hosts.yml -e "target_hosts=all patch_security_only=true"
-#   ansible-playbook 01_patch_hosts.yml --check
+#   ansible-playbook playbooks/02_patch_hosts.yml -e target_hosts=all
+#   ansible-playbook playbooks/02_patch_hosts.yml -e target_hosts=RHEL_10_Lab
+#   ansible-playbook playbooks/02_patch_hosts.yml -e "target_hosts=all patch_security_only=true"
+#   ansible-playbook playbooks/02_patch_hosts.yml -e '{"target_hosts":"all","exclude_packages":["kernel*"]}'
+#   ansible-playbook playbooks/02_patch_hosts.yml --check
 #
-# Requirements:
-#   - yum-utils (RHEL 10) or dnf-utils (RHEL 9) for needs-restarting
-#   - community.general collection for ini_file module
-#   - Hosts registered to Satellite with valid subscription
+# AAP Survey parameters:
+#   target_hosts         - Host group, collection, or search query
+#   patch_security_only  - Boolean: security updates only
+#   exclude_packages     - Comma-separated package exclusions
+#   patch_serial         - Integer: hosts to patch simultaneously (0 = all)
 #
-# Author: Robert Rathbun
+# Author:  Robert Rathbun
 # Version: 1.2.0
-# Date: 2026-05-20
-
+# ---------------------------------------------------------------------------
 - name: Patch RHEL Hosts
   hosts: "{{ target_hosts | default('all') }}"
   become: true
   gather_facts: false
   serial: "{{ patch_serial | default(0) }}"
 
-  vars:
-    # Disk space thresholds (300MB /boot matches RHEL default 960MB partition)
-    min_boot_free_mb: 300
-    min_root_free_gb: 5
-    min_var_free_gb: 3
-
-    # Kernel retention (current + one fallback)
-    installonly_limit: 2
-
-    # Patching behavior
-    patch_security_only: false
-    patch_update_only: true
-    enable_autoremove: true
-    patch_reboot_timeout: 1800
-
-    # Package exclusions (override per environment)
-    exclude_packages: []
-
-    # Critical services to validate post-reboot
-    critical_services:
-      - sshd
-      - chronyd
-
-    # Patching log directory
-    patch_log_dir: /var/log/patching
+  vars_files:
+    - ../vault/vault.yml
 
   pre_tasks:
 
-    #####################################################################
-    # 00 - OS and role gating (skip non-RHEL and Satellite hosts)
-    #####################################################################
-
-    - name: "Gate | Gather OS facts only"
+    - name: "Gate | Gather OS and mount facts"
       ansible.builtin.setup:
         gather_subset:
           - distribution
@@ -110,10 +67,6 @@
 
   tasks:
 
-    #####################################################################
-    # 01 - Pre-patch validation
-    #####################################################################
-
     - name: "Pre-patch | Ensure patching log directory exists"
       ansible.builtin.file:
         path: "{{ patch_log_dir }}"
@@ -136,40 +89,27 @@
       ansible.builtin.set_fact:
         boot_mount: "{{ (ansible_mounts | selectattr('mount', 'equalto', '/boot') | list | first) | default(ansible_mounts | selectattr('mount', 'equalto', '/') | list | first) }}"
         root_mount: "{{ ansible_mounts | selectattr('mount', 'equalto', '/') | list | first }}"
-        var_mount: "{{ (ansible_mounts | selectattr('mount', 'equalto', '/var') | list | first) | default(ansible_mounts | selectattr('mount', 'equalto', '/') | list | first) }}"
+        var_mount:  "{{ (ansible_mounts | selectattr('mount', 'equalto', '/var') | list | first) | default(ansible_mounts | selectattr('mount', 'equalto', '/') | list | first) }}"
 
     - name: "Pre-patch | Validate /boot free space"
       ansible.builtin.assert:
         that:
           - boot_mount.size_available > (min_boot_free_mb | int * 1048576)
-        fail_msg: >-
-          /boot has insufficient free space.
-          Available: {{ (boot_mount.size_available / 1048576) | round(0) }}MB,
-          Required: {{ min_boot_free_mb }}MB
+        fail_msg: "/boot insufficient: {{ (boot_mount.size_available / 1048576) | round(0) }}MB available, {{ min_boot_free_mb }}MB required"
 
     - name: "Pre-patch | Validate / free space"
       ansible.builtin.assert:
         that:
           - root_mount.size_available > (min_root_free_gb | int * 1073741824)
-        fail_msg: >-
-          / has insufficient free space.
-          Available: {{ (root_mount.size_available / 1073741824) | round(1) }}GB,
-          Required: {{ min_root_free_gb }}GB
+        fail_msg: "/ insufficient: {{ (root_mount.size_available / 1073741824) | round(1) }}GB available, {{ min_root_free_gb }}GB required"
 
     - name: "Pre-patch | Validate /var free space"
       ansible.builtin.assert:
         that:
           - var_mount.size_available > (min_var_free_gb | int * 1073741824)
-        fail_msg: >-
-          /var has insufficient free space.
-          Available: {{ (var_mount.size_available / 1073741824) | round(1) }}GB,
-          Required: {{ min_var_free_gb }}GB
+        fail_msg: "/var insufficient: {{ (var_mount.size_available / 1073741824) | round(1) }}GB available, {{ min_var_free_gb }}GB required"
 
-    #####################################################################
-    # 02 - Capture pre-patch state
-    #####################################################################
-
-    - name: "Pre-patch | Capture current kernel version"
+    - name: "Pre-patch | Capture current kernel and package state"
       ansible.builtin.set_fact:
         pre_patch_kernel: "{{ ansible_kernel }}"
 
@@ -199,14 +139,9 @@
         group: root
         mode: "0640"
 
-    #####################################################################
-    # 03 - Apply updates
-    #####################################################################
-
     - name: "Patch | Apply updates"
       block:
-
-        - name: "Patch | Update all packages"
+        - name: "Patch | Run dnf update"
           ansible.builtin.dnf:
             name: "*"
             state: latest
@@ -216,7 +151,6 @@
           register: patch_result
 
       rescue:
-
         - name: "Patch | Record patch failure"
           ansible.builtin.copy:
             content: |
@@ -234,10 +168,6 @@
         - name: "Patch | Fail with details"
           ansible.builtin.fail:
             msg: "Patching failed on {{ inventory_hostname }}. See {{ patch_log_dir }} for details."
-
-    #####################################################################
-    # 04 - Post-patch audit and cleanup
-    #####################################################################
 
     - name: "Post-patch | Record updated packages"
       ansible.builtin.copy:
@@ -266,10 +196,6 @@
         cmd: dnf clean all
       changed_when: false
 
-    #####################################################################
-    # 05 - Post-patch validation and conditional reboot
-    #####################################################################
-
     - name: "Post-patch | Check if reboot required"
       ansible.builtin.command:
         cmd: needs-restarting -r
@@ -294,7 +220,6 @@
         msg:
           - "============================================"
           - "PATCH SUMMARY: {{ inventory_hostname }}"
-          - "============================================"
           - "Kernel before:     {{ pre_patch_kernel }}"
           - "Kernel running:    {{ ansible_kernel }}"
           - "Reboot required:   {{ reboot_required }}"
@@ -324,10 +249,6 @@
         group: root
         mode: "0640"
 
-    #####################################################################
-    # 06 - Conditional reboot and post-reboot validation
-    #####################################################################
-
     - name: "Reboot | Reboot if required"
       ansible.builtin.reboot:
         msg: "Reboot initiated by Ansible patching playbook"
@@ -351,22 +272,17 @@
       loop: "{{ critical_services }}"
       when: reboot_required | bool
 
-    - name: "Reboot | Confirm running kernel after reboot"
+    - name: "Reboot | Post-reboot validation summary"
       ansible.builtin.debug:
         msg:
           - "============================================"
           - "POST-REBOOT VALIDATION: {{ inventory_hostname }}"
-          - "============================================"
           - "Running kernel:    {{ ansible_kernel }}"
           - "Pre-patch kernel:  {{ pre_patch_kernel }}"
           - "Kernel updated:    {{ ansible_kernel != pre_patch_kernel }}"
           - "Critical services: All running"
           - "============================================"
       when: reboot_required | bool
-
-    #####################################################################
-    # 07 - Final state recording
-    #####################################################################
 
     - name: "Complete | Record final state"
       ansible.builtin.copy:

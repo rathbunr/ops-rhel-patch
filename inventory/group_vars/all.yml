@@ -1,0 +1,63 @@
+---
+# ---------------------------------------------------------------------------
+# Satellite connection (values injected by AAP credential or vault)
+# ---------------------------------------------------------------------------
+satellite_server_url:      "{{ vault_satellite_server_url }}"
+satellite_username:        "{{ vault_satellite_username }}"
+satellite_password:        "{{ vault_satellite_password }}"
+satellite_validate_certs:  true
+satellite_organization:    "{{ vault_satellite_organization }}"
+
+# ---------------------------------------------------------------------------
+# Patching defaults (override per host group or job template survey)
+# ---------------------------------------------------------------------------
+patch_serial:          0           # 0 = all hosts simultaneously
+patch_security_only:   false
+patch_update_only:     true
+enable_autoremove:     false
+patch_reboot_timeout:  1800
+exclude_packages:      []
+
+# ---------------------------------------------------------------------------
+# Disk space thresholds
+# ---------------------------------------------------------------------------
+min_boot_free_mb: 300
+min_root_free_gb: 5
+min_var_free_gb:  3
+
+# ---------------------------------------------------------------------------
+# Kernel retention
+# ---------------------------------------------------------------------------
+installonly_limit: 2
+
+# ---------------------------------------------------------------------------
+# Post-reboot validation
+# ---------------------------------------------------------------------------
+critical_services:
+  - sshd
+  - chronyd
+
+# ---------------------------------------------------------------------------
+# Audit logging
+# ---------------------------------------------------------------------------
+patch_log_dir: /var/log/patching
+
+# ---------------------------------------------------------------------------
+# Satellite registration map (keyed by RHEL major version)
+# ---------------------------------------------------------------------------
+registration_map:
+  "10":
+    activation_key:        "AK-RHEL10"
+    content_view:          "CV-RHEL10"
+    lifecycle_environment: "Library"
+    host_collection:       "RHEL_10_Lab"
+  "9":
+    activation_key:        "AK-RHEL9"
+    content_view:          "CV-RHEL9"
+    lifecycle_environment: "Library"
+    host_collection:       "RHEL_9_Lab"
+  "8":
+    activation_key:        "AK-RHEL8"
+    content_view:          "CV-RHEL8"
+    lifecycle_environment: "Library"
+    host_collection:       "RHEL_8_Lab"

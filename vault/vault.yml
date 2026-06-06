@@ -1,0 +1,11 @@
+---
+# ---------------------------------------------------------------------------
+# Ansible Vault - encrypted secrets
+# Encrypt this file: ansible-vault encrypt vault/vault.yml
+# Edit in place:     ansible-vault edit vault/vault.yml
+# ---------------------------------------------------------------------------
+
+vault_satellite_server_url:   "https://sat.rh.corp.ritcsusa.com"
+vault_satellite_username:     "admin"
+vault_satellite_password:     "CHANGEME"
+vault_satellite_organization: "RITCSUSA"

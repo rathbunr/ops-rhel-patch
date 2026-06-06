@@ -1,32 +1,37 @@
 ---
+# ---------------------------------------------------------------------------
+# 01 - Satellite Registration Compliance Check
+#
+# Validates all managed hosts are registered to Satellite with the correct
+# content view, lifecycle environment, and host collection for their RHEL
+# major version.
+#
+# Usage:
+#   ansible-playbook playbooks/01_registration_compliance.yml
+#
+# AAP Survey parameters: none (runs against all managed hosts)
+#
+# Author:  Robert Rathbun
+# Version: 1.1.0
+# ---------------------------------------------------------------------------
 - name: Satellite Registration Compliance Check
   hosts: localhost
   gather_facts: false
   connection: local
 
-  vars:
-    registration_map:
-      "10":
-        activation_key: "AK-RHEL10"
-        content_view: "CV-RHEL10"
-        lifecycle_environment: "Library"
-        host_collection: "RHEL_10_Lab"
-      "9":
-        activation_key: "AK-RHEL9"
-        content_view: "CV-RHEL9"
-        lifecycle_environment: "Library"
-        host_collection: "RHEL_9_Lab"
+  vars_files:
+    - ../vault/vault.yml
 
   tasks:
     - name: Get all registered hosts
       redhat.satellite.resource_info:
-        server_url: "{{ satellite_server_url }}"
-        username: "{{ satellite_username }}"
-        password: "{{ satellite_password }}"
-        validate_certs: "{{ satellite_validate_certs }}"
-        resource: hosts
-        organization: "{{ satellite_organization }}"
-        search: "managed = true"
+        server_url:       "{{ satellite_server_url }}"
+        username:         "{{ satellite_username }}"
+        password:         "{{ satellite_password }}"
+        validate_certs:   "{{ satellite_validate_certs }}"
+        resource:         hosts
+        organization:     "{{ satellite_organization }}"
+        search:           "managed = true"
       register: satellite_hosts
 
     - name: Display discovered hosts
@@ -59,7 +64,7 @@
       loop_control:
         label: "{{ item.name }}"
 
-    - name: Display compliance report
+    - name: Display per-host compliance report
       ansible.builtin.debug:
         msg:
           - "============================================"
@@ -76,7 +81,7 @@
       loop_control:
         label: "{{ item.name }}"
 
-    - name: Summary - Non-compliant hosts
+    - name: Compliance summary
       ansible.builtin.debug:
         msg:
           - "============================================"
@@ -89,7 +94,7 @@
 
     - name: List non-compliant hosts requiring remediation
       ansible.builtin.debug:
-        msg: "REMEDIATION NEEDED: {{ item.name }} - CV: {{ item.cv_compliant }}, LE: {{ item.le_compliant }}, Collection: {{ item.collection_compliant }}"
+        msg: "REMEDIATION NEEDED: {{ item.name }} — CV: {{ item.cv_compliant }}, LE: {{ item.le_compliant }}, Collection: {{ item.collection_compliant }}"
       loop: "{{ compliance_results }}"
       loop_control:
         label: "{{ item.name }}"
