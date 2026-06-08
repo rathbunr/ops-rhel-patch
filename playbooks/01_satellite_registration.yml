@@ -1,0 +1,151 @@
+---
+# ---------------------------------------------------------------------------
+# 01 - Satellite Client Registration
+#
+# Ensures all managed RHEL hosts are registered to Red Hat Satellite using
+# the correct activation key for their RHEL major version. Already-registered
+# hosts are skipped. Non-RHEL and Satellite server hosts are excluded via
+# meta: end_host.
+#
+# Usage:
+#   ansible-playbook playbooks/01a_satellite_registration.yml -e target_hosts=all
+#   ansible-playbook playbooks/01a_satellite_registration.yml -e target_hosts=rhel_10
+#   ansible-playbook playbooks/01a_satellite_registration.yml --check
+#
+# AAP Survey parameters:
+#   target_hosts  - Host group, collection, or search query
+#
+# Requires:
+#   community.general (redhat_subscription module)
+#
+# Author:  Robert Rathbun
+# Version: 1.0.0
+# ---------------------------------------------------------------------------
+- name: Satellite Client Registration
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  gather_facts: false
+  serial: "{{ registration_serial | default(0) }}"
+
+  vars_files:
+    - ../vault/vault.yml
+
+  pre_tasks:
+
+    - name: "Gate | Gather OS facts"
+      ansible.builtin.setup:
+        gather_subset:
+          - distribution
+
+    - name: "Gate | Skip non-RHEL hosts"
+      ansible.builtin.meta: end_host
+      when: >-
+        ansible_distribution | default('') != 'RedHat'
+        or ansible_distribution_major_version | default('') not in ['8', '9', '10']
+
+    - name: "Gate | Check if host is a Satellite server"
+      ansible.builtin.command:
+        cmd: rpm -q satellite
+      register: sat_check
+      changed_when: false
+      failed_when: false
+
+    - name: "Gate | Skip Satellite servers"
+      ansible.builtin.meta: end_host
+      when: sat_check.rc == 0
+
+  tasks:
+
+    # -----------------------------------------------------------------
+    # Registration status check
+    # -----------------------------------------------------------------
+
+    - name: "Check | Query subscription-manager identity"
+      ansible.builtin.command:
+        cmd: subscription-manager identity
+      register: sm_identity
+      changed_when: false
+      failed_when: false
+
+    - name: "Check | Set registration fact"
+      ansible.builtin.set_fact:
+        already_registered: "{{ sm_identity.rc == 0 }}"
+
+    - name: "Check | Display current status"
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} —
+          {{ 'already registered, skipping' if already_registered
+             else 'NOT registered, will register to Satellite' }}
+
+    - name: "Check | Skip already-registered hosts"
+      ansible.builtin.meta: end_host
+      when: already_registered | bool
+
+    # -----------------------------------------------------------------
+    # Registration
+    # -----------------------------------------------------------------
+
+    - name: "Register | Resolve registration map for RHEL {{ ansible_distribution_major_version }}"
+      ansible.builtin.set_fact:
+        reg_entry: "{{ registration_map[ansible_distribution_major_version] }}"
+
+    - name: "Register | Fail if no registration map entry exists"
+      ansible.builtin.fail:
+        msg: >-
+          No registration_map entry for RHEL {{ ansible_distribution_major_version }}.
+          Add an entry to inventory/group_vars/all.yml before retrying.
+      when: reg_entry is not defined
+
+    - name: "Register | Install Satellite CA certificate"
+      block:
+
+        - name: "Register | Check if katello-ca-consumer is installed"
+          ansible.builtin.command:
+            cmd: rpm -q katello-ca-consumer-{{ satellite_hostname }}
+          register: katello_ca_check
+          changed_when: false
+          failed_when: false
+          vars:
+            satellite_hostname: "{{ satellite_server_url | urlsplit('hostname') }}"
+
+        - name: "Register | Install katello-ca-consumer RPM"
+          ansible.builtin.dnf:
+            name: "{{ satellite_server_url }}/pub/katello-ca-consumer-latest.noarch.rpm"
+            state: present
+            disable_gpg_check: true
+          when: katello_ca_check.rc != 0
+
+    - name: "Register | Register host to Satellite"
+      community.general.redhat_subscription:
+        state: present
+        activationkey: "{{ reg_entry.activation_key }}"
+        org_id: "{{ satellite_organization }}"
+      register: reg_result
+
+    - name: "Register | Verify registration succeeded"
+      ansible.builtin.command:
+        cmd: subscription-manager identity
+      register: sm_verify
+      changed_when: false
+      failed_when: sm_verify.rc != 0
+
+    - name: "Register | Enable only required repositories"
+      community.general.rhsm_repository:
+        name: "{{ item }}"
+        state: enabled
+        purge: true
+      loop: "{{ satellite_repos[ansible_distribution_major_version] | default([]) }}"
+      when: satellite_repos is defined and satellite_repos[ansible_distribution_major_version] is defined
+
+    - name: "Register | Display registration result"
+      ansible.builtin.debug:
+        msg:
+          - "============================================"
+          - "REGISTRATION COMPLETE: {{ inventory_hostname }}"
+          - "Activation Key:    {{ reg_entry.activation_key }}"
+          - "Content View:      {{ reg_entry.content_view }}"
+          - "Lifecycle Env:     {{ reg_entry.lifecycle_environment }}"
+          - "Host Collection:   {{ reg_entry.host_collection }}"
+          - "Organization:      {{ satellite_organization }}"
+          - "============================================"

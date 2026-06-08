@@ -1,6 +1,6 @@
 # ops-rhel-patch
 
-Ansible playbooks for automated RHEL 8/9/10 registration compliance and
+Ansible playbooks for automated RHEL 8/9/10 Satellite registration and
 patching against Red Hat Satellite, orchestrated via AAP 2.7.
 
 ---
@@ -16,7 +16,7 @@ ops-rhel-patch/
 ├── .vault_pass.example                # Template for local vault password file
 │
 ├── playbooks/
-│   ├── 01_registration_compliance.yml # Satellite registration compliance check
+│   ├── 01_satellite_registration.yml  # Satellite client registration
 │   └── 02_patch_hosts.yml             # Full RHEL patching cycle
 │
 ├── inventory/
@@ -49,8 +49,8 @@ chmod 600 .vault_pass
 # 3. Encrypt the vault
 ansible-vault encrypt vault/vault.yml
 
-# 4. Run registration compliance check
-ansible-playbook playbooks/01_registration_compliance.yml
+# 4. Register unregistered hosts to Satellite
+ansible-playbook playbooks/01_satellite_registration.yml -e target_hosts=all
 
 # 5. Patch all hosts
 ansible-playbook playbooks/02_patch_hosts.yml -e target_hosts=all
@@ -60,17 +60,40 @@ ansible-playbook playbooks/02_patch_hosts.yml -e target_hosts=all
 
 ## Playbooks
 
-### 01 — Registration compliance
+### 01 — Satellite registration
 
-Validates all managed hosts against Satellite for correct content view,
-lifecycle environment, and host collection per RHEL major version.
+Ensures all targeted RHEL hosts are registered to Satellite with the
+correct activation key for their major version. Already-registered hosts
+are skipped. Non-RHEL and Satellite server hosts are excluded automatically.
 
 ```bash
-ansible-playbook playbooks/01_registration_compliance.yml
+# Register all unregistered hosts
+ansible-playbook playbooks/01_satellite_registration.yml -e target_hosts=all
+
+# Register only RHEL 10 hosts
+ansible-playbook playbooks/01_satellite_registration.yml -e target_hosts=rhel_10
+
+# Dry run
+ansible-playbook playbooks/01_satellite_registration.yml -e target_hosts=all --check
 ```
 
-Outputs a per-host pass/fail report and a summary of non-compliant hosts
-requiring remediation.
+**Registration pipeline:**
+
+```
+Gate non-RHEL / Satellite server hosts
+    ↓
+Check subscription-manager identity
+    ↓
+Skip already-registered hosts
+    ↓
+Resolve activation key from registration_map
+    ↓
+Install Satellite CA certificate (idempotent)
+    ↓
+Register via activation key + org
+    ↓
+Verify registration
+```
 
 ### 02 — Fleet patching
 
@@ -139,6 +162,14 @@ are in `vault/vault.yml` and referenced via `vault_*` prefixed variables.
 | `critical_services` | `[sshd, chronyd]` | Services validated post-reboot |
 | `patch_log_dir` | `/var/log/patching` | JSON audit log directory |
 
+**Registration map** (in `group_vars/all.yml`):
+
+| RHEL Version | Activation Key | Content View | Lifecycle Env | Host Collection |
+|---|---|---|---|---|
+| 10 | `AK-RHEL10` | `CV-RHEL10` | `Library` | `RHEL_10_Lab` |
+| 9 | `AK-RHEL9` | `CV-RHEL9` | `Library` | `RHEL_9_Lab` |
+| 8 | `AK-RHEL8` | `CV-RHEL8` | `Library` | `RHEL_8_Lab` |
+
 ---
 
 ## Vault
@@ -182,9 +213,15 @@ Logs are structured for ITSM integration via the `servicenow.itsm` collection.
 
 | Job Template | Playbook | Trigger |
 |---|---|---|
-| Registration Compliance | `01_registration_compliance.yml` | Scheduled / on-demand |
+| Satellite Registration | `01_satellite_registration.yml` | On-demand / scheduled |
 | Patch RHEL Hosts | `02_patch_hosts.yml` | On-demand / scheduled |
 | Security Patch Only | `02_patch_hosts.yml` | On-demand (`patch_security_only=true`) |
+
+Survey parameters for the registration template:
+
+| Parameter | Type | Description |
+|---|---|---|
+| `target_hosts` | Text | Host group, collection, or search query |
 
 Survey parameters for the patching template:
 
