@@ -211,11 +211,80 @@ Logs are structured for ITSM integration via the `servicenow.itsm` collection.
 
 ## AAP integration
 
+### Custom credential type — Red Hat Satellite (Playbook)
+
+The built-in Red Hat Satellite credential type only serves the inventory
+plugin. Create a custom credential type to inject Satellite connection
+variables into job templates for this project.
+
+**Input Configuration:**
+
+```json
+{
+  "fields": [
+    {
+      "id": "satellite_server_url",
+      "type": "string",
+      "label": "Satellite Server URL"
+    },
+    {
+      "id": "satellite_username",
+      "type": "string",
+      "label": "Satellite Username"
+    },
+    {
+      "id": "satellite_password",
+      "type": "string",
+      "label": "Satellite Password",
+      "secret": true
+    },
+    {
+      "id": "satellite_organization",
+      "type": "string",
+      "label": "Satellite Organization"
+    },
+    {
+      "id": "satellite_validate_certs",
+      "type": "boolean",
+      "label": "Validate TLS Certificates"
+    }
+  ],
+  "required": [
+    "satellite_server_url",
+    "satellite_username",
+    "satellite_password",
+    "satellite_organization"
+  ]
+}
+```
+
+**Injector Configuration:**
+
+```json
+{
+  "extra_vars": {
+    "satellite_server_url": "{{ satellite_server_url }}",
+    "satellite_username": "{{ satellite_username }}",
+    "satellite_password": "{{ satellite_password }}",
+    "satellite_organization": "{{ satellite_organization }}",
+    "satellite_validate_certs": "{{ satellite_validate_certs }}"
+  }
+}
+```
+
+Attach this credential to both job templates. The injected extra vars
+take precedence over the vault-backed defaults in `group_vars/all.yml`,
+so the vault is only needed for CLI runs outside AAP.
+
+### Job templates
+
 | Job Template | Playbook | Trigger |
 |---|---|---|
 | Satellite Registration | `01_satellite_registration.yml` | On-demand / scheduled |
 | Patch RHEL Hosts | `02_patch_hosts.yml` | On-demand / scheduled |
 | Security Patch Only | `02_patch_hosts.yml` | On-demand (`patch_security_only=true`) |
+
+### Survey parameters
 
 Survey parameters for the registration template:
 
