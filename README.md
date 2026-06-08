@@ -309,7 +309,7 @@ Survey parameters for the patching template:
 - RHEL 10.1 / kernel 6.12.0
 - RHEL 9.7 / kernel 5.14.0
 - Ansible Core 2.16
-- AAP 2.7 (containerized)
+- AAP 2.6 & 2.7 (containerized)
 
 ---
 

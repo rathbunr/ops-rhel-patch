@@ -2,21 +2,23 @@
 # ---------------------------------------------------------------------------
 # 01 - Satellite Client Registration
 #
-# Ensures all managed RHEL hosts are registered to Red Hat Satellite using
-# the correct activation key for their RHEL major version. Already-registered
-# hosts are skipped. Non-RHEL and Satellite server hosts are excluded via
-# meta: end_host.
+# Ensures all targeted RHEL hosts are registered to Red Hat Satellite using
+# the global registration template. Already-registered hosts are skipped.
+# Non-RHEL and Satellite server hosts are excluded via meta: end_host.
+#
+# Uses redhat.satellite.registration_command to generate the registration
+# command server-side, then executes it on the target host.
 #
 # Usage:
-#   ansible-playbook playbooks/01a_satellite_registration.yml -e target_hosts=all
-#   ansible-playbook playbooks/01a_satellite_registration.yml -e target_hosts=rhel_10
-#   ansible-playbook playbooks/01a_satellite_registration.yml --check
+#   ansible-playbook playbooks/01_satellite_registration.yml -e target_hosts=all
+#   ansible-playbook playbooks/01_satellite_registration.yml -e target_hosts=rhel_10
+#   ansible-playbook playbooks/01_satellite_registration.yml --check
 #
 # AAP Survey parameters:
 #   target_hosts  - Host group, collection, or search query
 #
 # Requires:
-#   community.general (redhat_subscription module)
+#   redhat.satellite (registration_command module)
 #
 # Author:  Robert Rathbun
 # Version: 1.0.0
@@ -97,30 +99,25 @@
           Add an entry to inventory/group_vars/all.yml before retrying.
       when: reg_entry is not defined
 
-    - name: "Register | Install Satellite CA certificate"
-      block:
+    - name: "Register | Generate registration command from Satellite"
+      redhat.satellite.registration_command:
+        server_url:        "{{ satellite_server_url }}"
+        username:          "{{ satellite_username }}"
+        password:          "{{ satellite_password }}"
+        validate_certs:    "{{ satellite_validate_certs }}"
+        organization:      "{{ satellite_organization }}"
+        activation_keys:   "{{ reg_entry.activation_key }}"
+        setup_remote_execution: true
+        setup_insights:        true
+        update_packages:       false
+        force:                 false
+      register: reg_command
+      delegate_to: localhost
+      become: false
 
-        - name: "Register | Check if katello-ca-consumer is installed"
-          ansible.builtin.command:
-            cmd: rpm -q katello-ca-consumer-{{ satellite_hostname }}
-          register: katello_ca_check
-          changed_when: false
-          failed_when: false
-          vars:
-            satellite_hostname: "{{ satellite_server_url | urlsplit('hostname') }}"
-
-        - name: "Register | Install katello-ca-consumer RPM"
-          ansible.builtin.dnf:
-            name: "{{ satellite_server_url }}/pub/katello-ca-consumer-latest.noarch.rpm"
-            state: present
-            disable_gpg_check: true
-          when: katello_ca_check.rc != 0
-
-    - name: "Register | Register host to Satellite"
-      community.general.redhat_subscription:
-        state: present
-        activationkey: "{{ reg_entry.activation_key }}"
-        org_id: "{{ satellite_organization }}"
+    - name: "Register | Execute registration command"
+      ansible.builtin.shell:
+        cmd: "{{ reg_command.registration_command }}"
       register: reg_result
 
     - name: "Register | Verify registration succeeded"
@@ -129,14 +126,6 @@
       register: sm_verify
       changed_when: false
       failed_when: sm_verify.rc != 0
-
-    - name: "Register | Enable only required repositories"
-      community.general.rhsm_repository:
-        name: "{{ item }}"
-        state: enabled
-        purge: true
-      loop: "{{ satellite_repos[ansible_distribution_major_version] | default([]) }}"
-      when: satellite_repos is defined and satellite_repos[ansible_distribution_major_version] is defined
 
     - name: "Register | Display registration result"
       ansible.builtin.debug:
