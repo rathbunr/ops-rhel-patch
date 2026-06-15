@@ -1,0 +1,23 @@
+---
+galaxy_info:
+  author: Robert Rathbun
+  description: >-
+    Full RHEL patching cycle: pre-validation, update, cleanup,
+    conditional reboot, post-reboot service validation, and
+    structured JSON audit logging.
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: EL
+      versions:
+        - "8"
+        - "9"
+        - "10"
+  galaxy_tags:
+    - rhel
+    - patching
+    - security
+    - satellite
+
+dependencies:
+  - community.general

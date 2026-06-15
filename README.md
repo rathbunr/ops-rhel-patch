@@ -1,7 +1,8 @@
 # ops-rhel-patch
 
-Ansible playbooks for automated RHEL 8/9/10 Satellite registration and
-patching against Red Hat Satellite, orchestrated via AAP 2.7.
+Ansible role and playbook for automated RHEL 8/9/10 fleet patching,
+orchestrated via AAP 2.7. Hosts must be registered to Satellite before
+patching — see [ops-rhel-satellite-registration](https://github.com/rathbunr/ops-rhel-satellite-registration).
 
 ---
 
@@ -9,28 +10,30 @@ patching against Red Hat Satellite, orchestrated via AAP 2.7.
 
 ```
 ops-rhel-patch/
-├── ansible.cfg                        # Ansible configuration
-├── requirements.yml                   # Collection dependencies
-├── CODEOWNERS                         # Review requirements
-├── .gitignore                         # Excludes vault password, logs, etc.
-├── .vault_pass.example                # Template for local vault password file
+├── ansible.cfg
+├── requirements.yml
+├── .gitignore
 │
 ├── playbooks/
-│   ├── 01_satellite_registration.yml  # Satellite client registration
-│   └── 02_patch_hosts.yml             # Full RHEL patching cycle
+│   └── patch_hosts.yml              # Site playbook (gates + role invocation)
 │
-├── inventory/
-│   ├── hosts.yml                      # Static inventory scaffold
-│   ├── group_vars/
-│   │   └── all.yml                    # All variable defaults (non-secret)
-│   └── host_vars/                     # Per-host overrides (if needed)
+├── roles/
+│   └── rhel_patching/
+│       ├── defaults/main.yml        # All variable defaults
+│       ├── meta/main.yml            # Role metadata + dependencies
+│       ├── tasks/
+│       │   ├── main.yml             # Orchestrator (block/rescue/always)
+│       │   ├── pre_validate.yml     # Disk space, package state, pre-log
+│       │   ├── patch.yml            # dnf update
+│       │   ├── cleanup.yml          # Kernel retention, autoremove, cache
+│       │   └── reboot.yml           # Reboot detection + service validation
+│       └── templates/
+│           └── audit_log.json.j2    # Single template for all audit phases
 │
-├── vault/
-│   └── vault.yml                      # Encrypted secrets (ansible-vault)
-│
-├── vars/                              # Additional variable files (env-specific)
-├── files/                             # Static files for copy tasks
-└── templates/                         # Jinja2 templates
+└── inventory/
+    ├── hosts.yml
+    └── group_vars/
+        └── all.yml
 ```
 
 ---
@@ -41,115 +44,63 @@ ops-rhel-patch/
 # 1. Install collections
 ansible-galaxy collection install -r requirements.yml
 
-# 2. Set up vault password file (never commit this)
-cp .vault_pass.example .vault_pass
-echo "your-vault-password" > .vault_pass
-chmod 600 .vault_pass
-
-# 3. Encrypt the vault
-ansible-vault encrypt vault/vault.yml
-
-# 4. Register unregistered hosts to Satellite
-ansible-playbook playbooks/01_satellite_registration.yml -e target_hosts=all
-
-# 5. Patch all hosts
-ansible-playbook playbooks/02_patch_hosts.yml -e target_hosts=all
+# 2. Patch all hosts
+ansible-playbook playbooks/patch_hosts.yml -e target_hosts=all
 ```
 
 ---
 
-## Playbooks
-
-### 01 — Satellite registration
-
-Ensures all targeted RHEL hosts are registered to Satellite with the
-correct activation key for their major version. Already-registered hosts
-are skipped. Non-RHEL and Satellite server hosts are excluded automatically.
-
-```bash
-# Register all unregistered hosts
-ansible-playbook playbooks/01_satellite_registration.yml -e target_hosts=all
-
-# Register only RHEL 10 hosts
-ansible-playbook playbooks/01_satellite_registration.yml -e target_hosts=rhel_10
-
-# Dry run
-ansible-playbook playbooks/01_satellite_registration.yml -e target_hosts=all --check
-```
-
-**Registration pipeline:**
-
-```
-Gate non-RHEL / Satellite server hosts
-    ↓
-Check subscription-manager identity
-    ↓
-Skip already-registered hosts
-    ↓
-Resolve activation key from registration_map
-    ↓
-Install Satellite CA certificate (idempotent)
-    ↓
-Register via activation key + org
-    ↓
-Verify registration
-```
-
-### 02 — Fleet patching
-
-Full patching cycle with pre-validation, update, cleanup, reboot, and
-post-reboot service validation.
+## Usage
 
 ```bash
 # Patch all hosts
-ansible-playbook playbooks/02_patch_hosts.yml -e target_hosts=all
-
-# Patch a specific host group
-ansible-playbook playbooks/02_patch_hosts.yml -e target_hosts=RHEL_10_Lab
+ansible-playbook playbooks/patch_hosts.yml -e target_hosts=all
 
 # Security updates only
-ansible-playbook playbooks/02_patch_hosts.yml -e "target_hosts=all patch_security_only=true"
+ansible-playbook playbooks/patch_hosts.yml -e "target_hosts=all patch_security_only=true"
 
 # Exclude packages
-ansible-playbook playbooks/02_patch_hosts.yml -e '{"target_hosts":"all","exclude_packages":["kernel*","podman*"]}'
+ansible-playbook playbooks/patch_hosts.yml -e '{"target_hosts":"all","exclude_packages":["kernel*","podman*"]}'
 
 # Serial batching (10 hosts at a time)
-ansible-playbook playbooks/02_patch_hosts.yml -e "target_hosts=all patch_serial=10"
+ansible-playbook playbooks/patch_hosts.yml -e "target_hosts=all patch_serial=10"
 
 # Dry run
-ansible-playbook playbooks/02_patch_hosts.yml -e target_hosts=all --check
-```
-
-**Patching pipeline:**
-
-```
-Pre-patch validation (disk space, subscription, yum-utils)
-    ↓
-Capture pre-patch state (kernel, package count)
-    ↓
-Apply updates (dnf, with security-only and exclusion support)
-    ↓
-Record updated packages (JSON audit log)
-    ↓
-Post-patch cleanup (kernel retention, cache)
-    ↓
-Reboot detection (needs-restarting)
-    ↓
-Conditional reboot + service validation
-    ↓
-Record final state (JSON audit log)
+ansible-playbook playbooks/patch_hosts.yml -e target_hosts=all --check
 ```
 
 ---
 
-## Variables
+## Role: rhel_patching
 
-All defaults are defined in `inventory/group_vars/all.yml`. Secrets
-are in `vault/vault.yml` and referenced via `vault_*` prefixed variables.
+### Lifecycle
+
+```
+Init (run timestamp, log directory)
+    ↓
+block:
+  Pre-validate (disk space, package state, pre-patch audit log)
+      ↓
+  Patch (dnf update, record updated packages)
+      ↓
+  Cleanup (kernel retention, autoremove, cache)
+      ↓
+  Reboot (needs-restarting detection, conditional reboot, service validation)
+rescue:
+  Record failure → audit log → fail with details
+always:
+  Final package count → completion audit log → summary output
+```
+
+The `block/rescue/always` structure guarantees audit logging and cleanup
+run even when patching fails.
+
+### Variables
+
+All defaults are in `roles/rhel_patching/defaults/main.yml`.
 
 | Variable | Default | Description |
 |---|---|---|
-| `patch_serial` | `0` | Hosts to patch simultaneously (0 = all) |
 | `patch_security_only` | `false` | Apply security updates only |
 | `patch_update_only` | `true` | Prevent accidental new package installs |
 | `enable_autoremove` | `false` | Remove orphaned dependencies |
@@ -159,140 +110,34 @@ are in `vault/vault.yml` and referenced via `vault_*` prefixed variables.
 | `min_root_free_gb` | `5` | Minimum free space on / |
 | `min_var_free_gb` | `3` | Minimum free space on /var |
 | `patch_reboot_timeout` | `1800` | Seconds to wait for reboot |
+| `patch_reboot_delay` | `30` | Seconds to wait after reboot before validation |
 | `critical_services` | `[sshd, chronyd]` | Services validated post-reboot |
 | `patch_log_dir` | `/var/log/patching` | JSON audit log directory |
 
-**Registration map** (in `group_vars/all.yml`):
-
-| RHEL Version | Activation Key | Content View | Lifecycle Env | Host Collection |
-|---|---|---|---|---|
-| 10 | `AK-RHEL10` | `CV-RHEL10` | `Library` | `RHEL_10_Lab` |
-| 9 | `AK-RHEL9` | `CV-RHEL9` | `Library` | `RHEL_9_Lab` |
-| 8 | `AK-RHEL8` | `CV-RHEL8` | `Library` | `RHEL_8_Lab` |
-
----
-
-## Vault
-
-Secrets are managed with Ansible Vault. The vault file references variables
-prefixed with `vault_` which are mapped to their runtime names in
-`inventory/group_vars/all.yml`.
-
-```bash
-# Encrypt
-ansible-vault encrypt vault/vault.yml
-
-# Edit in place
-ansible-vault edit vault/vault.yml
-
-# View without decrypting to disk
-ansible-vault view vault/vault.yml
-```
-
-**Never commit a decrypted vault file or `.vault_pass`.**
-
----
-
-## Audit trail
+### Audit trail
 
 Each patching run produces JSON logs in `/var/log/patching/` on each host.
+All logs share a `run_id` for correlation.
 
 | File | Contents |
 |---|---|
-| `pre-patch-*.json` | Kernel, package count, disk space before patching |
-| `packages-updated-*.json` | Packages installed or removed |
-| `post-patch-*.json` | Kernel, reboot status after patching |
-| `patch-complete-*.json` | Final validation result |
+| `pre-patch-*.json` | Kernel, package count, disk space |
+| `packages-updated-*.json` | List of packages updated |
+| `patch-complete-*.json` | Final state, kernel delta, reboot status |
 | `patch-failure-*.json` | Error details (failure only) |
-
-Logs are structured for ITSM integration via the `servicenow.itsm` collection.
 
 ---
 
 ## AAP integration
 
-### Custom credential type — Red Hat Satellite (Playbook)
-
-The built-in Red Hat Satellite credential type only serves the inventory
-plugin. Create a custom credential type to inject Satellite connection
-variables into job templates for this project.
-
-**Input Configuration:**
-
-```json
-{
-  "fields": [
-    {
-      "id": "satellite_server_url",
-      "type": "string",
-      "label": "Satellite Server URL"
-    },
-    {
-      "id": "satellite_username",
-      "type": "string",
-      "label": "Satellite Username"
-    },
-    {
-      "id": "satellite_password",
-      "type": "string",
-      "label": "Satellite Password",
-      "secret": true
-    },
-    {
-      "id": "satellite_organization",
-      "type": "string",
-      "label": "Satellite Organization"
-    },
-    {
-      "id": "satellite_validate_certs",
-      "type": "boolean",
-      "label": "Validate TLS Certificates"
-    }
-  ],
-  "required": [
-    "satellite_server_url",
-    "satellite_username",
-    "satellite_password",
-    "satellite_organization"
-  ]
-}
-```
-
-**Injector Configuration:**
-
-```json
-{
-  "extra_vars": {
-    "satellite_server_url": "{{ satellite_server_url }}",
-    "satellite_username": "{{ satellite_username }}",
-    "satellite_password": "{{ satellite_password }}",
-    "satellite_organization": "{{ satellite_organization }}",
-    "satellite_validate_certs": "{{ satellite_validate_certs }}"
-  }
-}
-```
-
-Attach this credential to both job templates. The injected extra vars
-take precedence over the vault-backed defaults in `group_vars/all.yml`,
-so the vault is only needed for CLI runs outside AAP.
-
 ### Job templates
 
 | Job Template | Playbook | Trigger |
 |---|---|---|
-| Satellite Registration | `01_satellite_registration.yml` | On-demand / scheduled |
-| Patch RHEL Hosts | `02_patch_hosts.yml` | On-demand / scheduled |
-| Security Patch Only | `02_patch_hosts.yml` | On-demand (`patch_security_only=true`) |
+| Patch RHEL Hosts | `playbooks/patch_hosts.yml` | On-demand / scheduled |
+| Security Patch Only | `playbooks/patch_hosts.yml` | On-demand (`patch_security_only=true`) |
 
 ### Survey parameters
-
-Survey parameters for the registration template:
-
-| Parameter | Type | Description |
-|---|---|---|
-| `target_hosts` | Text | Host group, collection, or search query |
-
-Survey parameters for the patching template:
 
 | Parameter | Type | Description |
 |---|---|---|
@@ -303,13 +148,18 @@ Survey parameters for the patching template:
 
 ---
 
+## Related projects
+
+- [ops-rhel-satellite-registration](https://github.com/rathbunr/ops-rhel-satellite-registration) — Satellite client registration (prerequisite)
+
+---
+
 ## Validated against
 
 - Red Hat Satellite 6.19
-- RHEL 10.1 / kernel 6.12.0
-- RHEL 9.7 / kernel 5.14.0
+- RHEL 10.2, 9.8, 8.10
 - Ansible Core 2.16
-- AAP 2.6 & 2.7 (containerized)
+- AAP 2.7 (containerized)
 
 ---
 

@@ -1,0 +1,107 @@
+---
+# roles/rhel_patching/tasks/main.yml
+# Orchestrates the patching lifecycle with block/rescue/always
+# to guarantee cleanup and final audit logging even on failure.
+
+- name: "Init | Set run timestamp and ID"
+  ansible.builtin.set_fact:
+    _patch_timestamp: "{{ ansible_date_time.iso8601 }}"
+    _patch_run_id: "{{ ansible_date_time.iso8601_basic_short }}"
+    _patch_status: "success"
+
+- name: "Init | Ensure patching log directory exists"
+  ansible.builtin.file:
+    path: "{{ patch_log_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: "Init | Clean previous patching logs"
+  ansible.builtin.find:
+    paths: "{{ patch_log_dir }}"
+    patterns: "*.json"
+  register: _old_logs
+
+- name: "Init | Remove previous patching logs"
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ _old_logs.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+
+- name: "Patching lifecycle"
+  block:
+
+    - name: "Pre-validate"
+      ansible.builtin.include_tasks: pre_validate.yml
+
+    - name: "Patch"
+      ansible.builtin.include_tasks: patch.yml
+
+    - name: "Cleanup"
+      ansible.builtin.include_tasks: cleanup.yml
+
+    - name: "Reboot"
+      ansible.builtin.include_tasks: reboot.yml
+
+  rescue:
+
+    - name: "Rescue | Record failure"
+      ansible.builtin.set_fact:
+        _patch_status: "failed"
+        _patch_error: "{{ ansible_failed_result.msg | default('Unknown error') }}"
+
+    - name: "Rescue | Write failure log"
+      ansible.builtin.template:
+        src: audit_log.json.j2
+        dest: "{{ patch_log_dir }}/patch-failure-{{ _patch_run_id }}.json"
+        owner: root
+        group: root
+        mode: "0640"
+      vars:
+        _log_phase: "patch-failure"
+
+    - name: "Rescue | Fail with details"
+      ansible.builtin.fail:
+        msg: "Patching failed on {{ inventory_hostname }}: {{ _patch_error }}"
+
+  always:
+
+    - name: "Always | Refresh package facts for final count"
+      ansible.builtin.package_facts:
+        manager: auto
+      when: _patch_status == 'success'
+
+    - name: "Always | Capture final package count"
+      ansible.builtin.set_fact:
+        _post_patch_pkg_count: "{{ ansible_facts.packages | length }}"
+      when: _patch_status == 'success'
+
+    - name: "Always | Write completion log"
+      ansible.builtin.template:
+        src: audit_log.json.j2
+        dest: "{{ patch_log_dir }}/patch-complete-{{ _patch_run_id }}.json"
+        owner: root
+        group: root
+        mode: "0640"
+      vars:
+        _log_phase: "complete"
+      when: _patch_status == 'success'
+
+    - name: "Always | Display final summary"
+      ansible.builtin.debug:
+        msg:
+          - "============================================"
+          - "PATCH SUMMARY: {{ inventory_hostname }}"
+          - "Status:            {{ _patch_status }}"
+          - "Kernel before:     {{ _pre_patch_kernel | default('N/A') }}"
+          - "Kernel after:      {{ ansible_kernel }}"
+          - "Rebooted:          {{ _reboot_required | default(false) }}"
+          - "Security only:     {{ patch_security_only }}"
+          - "Packages before:   {{ _pre_patch_pkg_count | default('N/A') }}"
+          - "Packages after:    {{ _post_patch_pkg_count | default('N/A') }}"
+          - "Packages updated:  {{ _packages_updated | default(0) }}"
+          - "Exclusions:        {{ exclude_packages | join(', ') if exclude_packages | length > 0 else 'None' }}"
+          - "============================================"

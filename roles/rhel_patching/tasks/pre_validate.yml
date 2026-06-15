@@ -1,0 +1,61 @@
+---
+# roles/rhel_patching/tasks/pre_validate.yml
+
+- name: "Pre-patch | Ensure needs-restarting is available"
+  ansible.builtin.dnf:
+    name: yum-utils
+    state: present
+
+- name: "Pre-patch | Detect mount points"
+  ansible.builtin.set_fact:
+    _boot_mount: >-
+      {{ (ansible_mounts | selectattr('mount', 'equalto', '/boot') | list | first)
+         | default(ansible_mounts | selectattr('mount', 'equalto', '/') | list | first) }}
+    _root_mount: >-
+      {{ ansible_mounts | selectattr('mount', 'equalto', '/') | list | first }}
+    _var_mount: >-
+      {{ (ansible_mounts | selectattr('mount', 'equalto', '/var') | list | first)
+         | default(ansible_mounts | selectattr('mount', 'equalto', '/') | list | first) }}
+
+- name: "Pre-patch | Validate /boot free space"
+  ansible.builtin.assert:
+    that:
+      - _boot_mount.size_available > (min_boot_free_mb | int * 1048576)
+    fail_msg: >-
+      /boot insufficient: {{ (_boot_mount.size_available / 1048576) | round(0) }}MB
+      available, {{ min_boot_free_mb }}MB required
+
+- name: "Pre-patch | Validate / free space"
+  ansible.builtin.assert:
+    that:
+      - _root_mount.size_available > (min_root_free_gb | int * 1073741824)
+    fail_msg: >-
+      / insufficient: {{ (_root_mount.size_available / 1073741824) | round(1) }}GB
+      available, {{ min_root_free_gb }}GB required
+
+- name: "Pre-patch | Validate /var free space"
+  ansible.builtin.assert:
+    that:
+      - _var_mount.size_available > (min_var_free_gb | int * 1073741824)
+    fail_msg: >-
+      /var insufficient: {{ (_var_mount.size_available / 1073741824) | round(1) }}GB
+      available, {{ min_var_free_gb }}GB required
+
+- name: "Pre-patch | Gather installed package facts"
+  ansible.builtin.package_facts:
+    manager: auto
+
+- name: "Pre-patch | Capture pre-patch state"
+  ansible.builtin.set_fact:
+    _pre_patch_kernel: "{{ ansible_kernel }}"
+    _pre_patch_pkg_count: "{{ ansible_facts.packages | length }}"
+
+- name: "Pre-patch | Write pre-patch audit log"
+  ansible.builtin.template:
+    src: audit_log.json.j2
+    dest: "{{ patch_log_dir }}/pre-patch-{{ _patch_run_id }}.json"
+    owner: root
+    group: root
+    mode: "0640"
+  vars:
+    _log_phase: "pre-patch"

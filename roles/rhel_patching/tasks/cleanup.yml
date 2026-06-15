@@ -1,0 +1,20 @@
+---
+# roles/rhel_patching/tasks/cleanup.yml
+
+- name: "Cleanup | Enforce kernel retention limit"
+  community.general.ini_file:
+    path: /etc/dnf/dnf.conf
+    section: main
+    option: installonly_limit
+    value: "{{ installonly_limit }}"
+    no_extra_spaces: true
+
+- name: "Cleanup | Remove orphaned dependencies"
+  ansible.builtin.dnf:
+    autoremove: true
+  when: enable_autoremove | bool
+
+- name: "Cleanup | Clean DNF cache"
+  ansible.builtin.command:
+    cmd: dnf clean all
+  changed_when: false

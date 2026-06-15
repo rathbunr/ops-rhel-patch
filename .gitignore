@@ -1,38 +1,5 @@
-# Vault password file - NEVER commit this
 .vault_pass
-*.vault_pass
-
-# Vault contents if accidentally decrypted in place
-vault/vault_decrypted.yml
-
-# Ansible retry files
 *.retry
-
-# Python artifacts
-__pycache__/
-*.pyc
-*.pyo
-.Python
-*.egg-info/
-
-# Editor artifacts
-.vscode/settings.json
-.idea/
-*.swp
-*.swo
-*~
-
-# OS artifacts
-.DS_Store
-Thumbs.db
-
-# Local inventory overrides (never commit host-specific overrides)
-inventory/local_*
-inventory/host_vars/local_*
-
-# Temporary patching logs pulled locally for review
-logs/
 *.log
-
-# Collections installed locally (use requirements.yml instead)
-collections/
+__pycache__/
+.venv/

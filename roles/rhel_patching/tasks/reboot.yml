@@ -1,0 +1,41 @@
+---
+# roles/rhel_patching/tasks/reboot.yml
+
+- name: "Reboot | Check if reboot required"
+  ansible.builtin.command:
+    cmd: needs-restarting -r
+  register: _reboot_check
+  failed_when: _reboot_check.rc not in [0, 1]
+  changed_when: false
+
+- name: "Reboot | Set reboot fact"
+  ansible.builtin.set_fact:
+    _reboot_required: "{{ _reboot_check.rc == 1 }}"
+
+- name: "Reboot | Reboot if required"
+  ansible.builtin.reboot:
+    msg: "Reboot initiated by Ansible patching role"
+    reboot_timeout: "{{ patch_reboot_timeout }}"
+    post_reboot_delay: "{{ patch_reboot_delay }}"
+  when: _reboot_required | bool
+
+- name: "Reboot | Refresh facts after reboot"
+  ansible.builtin.setup:
+    gather_subset:
+      - distribution
+      - date_time
+  when: _reboot_required | bool
+
+- name: "Reboot | Gather service facts"
+  ansible.builtin.service_facts:
+  when: _reboot_required | bool
+
+- name: "Reboot | Validate critical services are running"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.services[item + '.service'].state == 'running'
+    fail_msg: >-
+      Critical service {{ item }} is not running after reboot
+      on {{ inventory_hostname }}
+  loop: "{{ critical_services }}"
+  when: _reboot_required | bool

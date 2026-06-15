@@ -1,0 +1,26 @@
+{
+  "host": "{{ inventory_hostname }}",
+  "run_id": "{{ _patch_run_id }}",
+  "phase": "{{ _log_phase }}",
+  "timestamp": "{{ _patch_timestamp }}",
+{% if _log_phase == 'pre-patch' %}
+  "kernel": "{{ _pre_patch_kernel }}",
+  "package_count": {{ _pre_patch_pkg_count }},
+  "boot_free_mb": {{ (_boot_mount.size_available / 1048576) | round(0) }},
+  "root_free_gb": {{ (_root_mount.size_available / 1073741824) | round(1) }},
+  "var_free_gb": {{ (_var_mount.size_available / 1073741824) | round(1) }}
+{% elif _log_phase == 'patch-failure' %}
+  "kernel": "{{ _pre_patch_kernel }}",
+  "error": "{{ _patch_error | default('Unknown error') }}"
+{% elif _log_phase == 'complete' %}
+  "kernel_before": "{{ _pre_patch_kernel }}",
+  "kernel_after": "{{ ansible_kernel }}",
+  "rebooted": {{ _reboot_required | default(false) | lower }},
+  "security_only": {{ patch_security_only | lower }},
+  "packages_before": {{ _pre_patch_pkg_count }},
+  "packages_after": {{ _post_patch_pkg_count | default(_pre_patch_pkg_count) }},
+  "packages_updated": {{ _packages_updated | default(0) }},
+  "exclusions": {{ exclude_packages | to_json }},
+  "status": "{{ _patch_status | default('success') }}"
+{% endif %}
+}

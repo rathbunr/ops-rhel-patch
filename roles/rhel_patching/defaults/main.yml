@@ -1,0 +1,30 @@
+---
+# roles/rhel_patching/defaults/main.yml
+# All defaults for the rhel_patching role.
+# Override via group_vars, host_vars, or AAP survey.
+
+# Patching behavior
+patch_security_only: false
+patch_update_only: true
+enable_autoremove: false
+exclude_packages: []
+
+# Disk space thresholds
+min_boot_free_mb: 300
+min_root_free_gb: 5
+min_var_free_gb: 3
+
+# Kernel retention
+installonly_limit: 2
+
+# Reboot
+patch_reboot_timeout: 1800
+patch_reboot_delay: 30
+
+# Post-reboot service validation
+critical_services:
+  - sshd
+  - chronyd
+
+# Audit logging
+patch_log_dir: /var/log/patching

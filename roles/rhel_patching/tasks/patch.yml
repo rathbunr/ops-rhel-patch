@@ -1,0 +1,24 @@
+---
+# roles/rhel_patching/tasks/patch.yml
+
+- name: "Patch | Apply updates"
+  ansible.builtin.dnf:
+    name: "*"
+    state: latest
+    update_only: "{{ patch_update_only }}"
+    security: "{{ patch_security_only }}"
+    exclude: "{{ exclude_packages | join(',') if exclude_packages | length > 0 else omit }}"
+  register: _patch_result
+
+- name: "Patch | Capture update count"
+  ansible.builtin.set_fact:
+    _packages_updated: "{{ _patch_result.results | default([]) | length }}"
+
+- name: "Patch | Write updated packages log"
+  ansible.builtin.copy:
+    content: "{{ _patch_result.results | default([]) | to_nice_json }}"
+    dest: "{{ patch_log_dir }}/packages-updated-{{ _patch_run_id }}.json"
+    owner: root
+    group: root
+    mode: "0640"
+  when: _patch_result.changed

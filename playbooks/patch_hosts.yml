@@ -1,0 +1,56 @@
+---
+# ---------------------------------------------------------------------------
+# RHEL Host Patching
+#
+# Site playbook that invokes the rhel_patching role.
+# Non-RHEL and Satellite server hosts are gated in pre_tasks.
+#
+# Usage:
+#   ansible-playbook playbooks/patch_hosts.yml -e target_hosts=all
+#   ansible-playbook playbooks/patch_hosts.yml -e target_hosts=RHEL_10_Lab
+#   ansible-playbook playbooks/patch_hosts.yml -e "target_hosts=all patch_security_only=true"
+#   ansible-playbook playbooks/patch_hosts.yml --check
+#
+# AAP Survey parameters:
+#   target_hosts         - Host group, collection, or search query
+#   patch_security_only  - Boolean: security updates only
+#   exclude_packages     - Comma-separated package exclusions
+#   patch_serial         - Integer: hosts to patch simultaneously (0 = all)
+#
+# Author:  Robert Rathbun
+# Version: 3.0.0
+# ---------------------------------------------------------------------------
+- name: Patch RHEL Hosts
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  gather_facts: false
+  serial: "{{ patch_serial | default(0) }}"
+
+  pre_tasks:
+
+    - name: "Gate | Gather OS and mount facts"
+      ansible.builtin.setup:
+        gather_subset:
+          - distribution
+          - mounts
+          - date_time
+
+    - name: "Gate | Skip non-RHEL hosts"
+      ansible.builtin.meta: end_host
+      when: >-
+        ansible_distribution | default('') != 'RedHat'
+        or ansible_distribution_major_version | default('') not in ['8', '9', '10']
+
+    - name: "Gate | Check if host is a Satellite server"
+      ansible.builtin.command:
+        cmd: rpm -q satellite
+      register: _sat_check
+      changed_when: false
+      failed_when: false
+
+    - name: "Gate | Skip Satellite servers"
+      ansible.builtin.meta: end_host
+      when: _sat_check.rc == 0
+
+  roles:
+    - rhel_patching
