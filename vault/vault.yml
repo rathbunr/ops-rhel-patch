@@ -1,4 +1,4 @@
----
+# ---
 # ---------------------------------------------------------------------------
 # Ansible Vault - encrypted secrets
 # Encrypt this file: ansible-vault encrypt vault/vault.yml
