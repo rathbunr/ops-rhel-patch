@@ -9,4 +9,4 @@
 #   echo "your-vault-password" > .vault_pass
 #   chmod 600 .vault_pass
 # ---------------------------------------------------------------------------
-CHANGEME
+# CHANGEME
