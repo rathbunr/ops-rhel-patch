@@ -3,6 +3,6 @@ collections:
   - name: community.general
     version: ">=8.0.0"
   - name: redhat.satellite
-    version: ">=5.0.0"
+    version: ">=1.120.5"
   - name: microsoft.ad
     version: ">=1.0.0"
