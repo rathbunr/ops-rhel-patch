@@ -19,5 +19,4 @@ galaxy_info:
     - security
     - satellite
 
-dependencies:
-  - community.general
+dependencies: []
