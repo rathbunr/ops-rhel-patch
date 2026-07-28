@@ -19,7 +19,7 @@
 
   vars:
     survey_spec_path: "{{ playbook_dir }}/../survey_spec.json"
-    job_template_name: "{{ job_template_name | default('ops-rhel-patch') }}"
+    job_template_name: "ops-rhel-patch"
 
   tasks:
 
