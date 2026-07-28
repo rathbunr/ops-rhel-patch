@@ -2,14 +2,17 @@
 # ---------------------------------------------------------------------------
 # Post-sync: Push survey_spec.json to the AAP job template
 #
+# Uses the AAP 2.5+ gateway API path (/api/controller/v2/) directly, since
+# awx.awx hardcodes /api/v2/ and cannot reach the gateway-proxied controller.
+#
 # Run this as a workflow node after the project sync, or manually:
 #   ansible-playbook playbooks/post_sync.yml
 #
 # Required credentials (AAP credential type: Red Hat Ansible Automation Platform):
-#   CONTROLLER_HOST          - injected as controller_host
-#   CONTROLLER_OAUTH_TOKEN   - injected as controller_oauthtoken
+#   CONTROLLER_HOST          - injected as an environment variable
+#   CONTROLLER_OAUTH_TOKEN   - injected as an environment variable
 #
-# Required extra variable:
+# Optional extra variable:
 #   job_template_name        - name of the job template to update
 # ---------------------------------------------------------------------------
 - name: Push survey spec to AAP controller
@@ -20,6 +23,9 @@
   vars:
     survey_spec_path: "{{ playbook_dir }}/../survey_spec.json"
     job_template_name: "ops-rhel-patch"
+    controller_base: "{{ lookup('env', 'CONTROLLER_HOST') | default('https://aap-01.rh.corp.ritcsusa.com', true) | regex_replace('/$', '') }}"
+    controller_api: "{{ controller_base }}/api/controller/v2"
+    controller_token: "{{ lookup('env', 'CONTROLLER_OAUTH_TOKEN') }}"
 
   tasks:
 
@@ -33,14 +39,62 @@
         msg: "survey_spec.json not found at {{ survey_spec_path }}"
       when: not _survey_file.stat.exists
 
+    - name: "Fail if controller token is not available"
+      ansible.builtin.fail:
+        msg: >-
+          CONTROLLER_OAUTH_TOKEN is not set. Attach a Red Hat Ansible
+          Automation Platform credential to this job template.
+      when: controller_token | length == 0
+
     - name: "Load survey spec"
       ansible.builtin.set_fact:
         _survey_spec: "{{ lookup('file', survey_spec_path) | from_json }}"
 
-    - name: "Apply survey to job template"
-      awx.awx.job_template:
-        name: "{{ job_template_name }}"
-        organization: "RITCSUSA"
-        survey_enabled: true
-        survey_spec: "{{ _survey_spec }}"
-        controller_host: "https://aap-01.rh.corp.ritcsusa.com/api/controller"
+    - name: "Look up job template ID"
+      ansible.builtin.uri:
+        url: "{{ controller_api }}/job_templates/?name={{ job_template_name | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ controller_token }}"
+        return_content: true
+      register: _jt_lookup
+      no_log: true
+
+    - name: "Fail if job template was not found"
+      ansible.builtin.fail:
+        msg: "No job template named '{{ job_template_name }}' found on {{ controller_base }}"
+      when: _jt_lookup.json.count | int == 0
+
+    - name: "Set job template ID"
+      ansible.builtin.set_fact:
+        _jt_id: "{{ _jt_lookup.json.results[0].id }}"
+
+    - name: "Enable survey on job template"
+      ansible.builtin.uri:
+        url: "{{ controller_api }}/job_templates/{{ _jt_id }}/"
+        method: PATCH
+        headers:
+          Authorization: "Bearer {{ controller_token }}"
+        body_format: json
+        body:
+          survey_enabled: true
+        status_code: [200]
+      no_log: true
+
+    - name: "Apply survey spec"
+      ansible.builtin.uri:
+        url: "{{ controller_api }}/job_templates/{{ _jt_id }}/survey_spec/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ controller_token }}"
+        body_format: json
+        body: "{{ _survey_spec }}"
+        status_code: [200, 201]
+      no_log: true
+
+    - name: "Confirm survey applied"
+      ansible.builtin.debug:
+        msg: >-
+          Survey '{{ _survey_spec.name }}' applied to job template
+          '{{ job_template_name }}' (id {{ _jt_id }}) with
+          {{ _survey_spec.spec | length }} questions.
