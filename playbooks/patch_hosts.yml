@@ -16,9 +16,10 @@
 #   patch_security_only  - Boolean: security updates only
 #   exclude_packages     - Comma-separated package exclusions
 #   patch_serial         - Integer: hosts to patch simultaneously (0 = all)
+#   enable_autoremove    - Boolean: remove orphaned dependencies
 #
 # Author:  Robert Rathbun
-# Version: 3.0.0
+# Version: 3.1.0
 # ---------------------------------------------------------------------------
 - name: Patch RHEL Hosts
   hosts: "{{ target_hosts | default('all') }}"
@@ -27,6 +28,11 @@
   serial: "{{ patch_serial | default(0) }}"
 
   pre_tasks:
+
+    - name: "Gate | Parse exclude_packages from survey"
+      ansible.builtin.set_fact:
+        exclude_packages: "{{ exclude_packages.split(',') | map('trim') | select | list }}"
+      when: exclude_packages is defined and exclude_packages is string and exclude_packages | length > 0
 
     - name: "Gate | Gather OS and mount facts"
       ansible.builtin.setup:

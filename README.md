@@ -23,9 +23,9 @@ ops-rhel-patch/
 │       ├── meta/main.yml            # Role metadata + dependencies
 │       ├── tasks/
 │       │   ├── main.yml             # Orchestrator (block/rescue/always)
-│       │   ├── pre_validate.yml     # Disk space, package state, pre-log
+│       │   ├── pre_validate.yml     # Disk space, kernel retention, package state
 │       │   ├── patch.yml            # dnf update
-│       │   ├── cleanup.yml          # Kernel retention, autoremove, cache
+│       │   ├── cleanup.yml          # Autoremove, cache clean
 │       │   └── reboot.yml           # Reboot detection + service validation
 │       └── templates/
 │           └── audit_log.json.j2    # Single template for all audit phases
@@ -79,21 +79,27 @@ ansible-playbook playbooks/patch_hosts.yml -e target_hosts=all --check
 Init (run timestamp, log directory)
     ↓
 block:
-  Pre-validate (disk space, package state, pre-patch audit log)
+  Pre-validate (disk space, kernel retention, package state)
       ↓
   Patch (dnf update, record updated packages)
       ↓
-  Cleanup (kernel retention, autoremove, cache)
-      ↓
-  Reboot (needs-restarting detection, conditional reboot, service validation)
+  Post-patch (only when patches were applied):
+      Cleanup (autoremove, cache clean)
+          ↓
+      Reboot (needs-restarting detection, conditional reboot, service validation)
 rescue:
   Record failure → audit log → fail with details
 always:
-  Final package count → completion audit log → summary output
+  Audit logs (pre-patch + completion, only when patches were applied)
+      ↓
+  Prune logs beyond retention period
+      ↓
+  Summary output
 ```
 
-The `block/rescue/always` structure guarantees audit logging and cleanup
-run even when patching fails.
+The `block/rescue/always` structure guarantees cleanup and summary output
+run even when patching fails. Audit logs are only written when patches
+are applied, keeping subsequent runs idempotent.
 
 ### Variables
 
@@ -113,11 +119,14 @@ All defaults are in `roles/rhel_patching/defaults/main.yml`.
 | `patch_reboot_delay` | `30` | Seconds to wait after reboot before validation |
 | `critical_services` | `[sshd, chronyd]` | Services validated post-reboot |
 | `patch_log_dir` | `/var/log/patching` | JSON audit log directory |
+| `patch_log_retention_days` | `90` | Days to retain audit logs before pruning |
 
 ### Audit trail
 
-Each patching run produces JSON logs in `/var/log/patching/` on each host.
-All logs share a `run_id` for correlation.
+Each patching run that applies updates produces JSON logs in
+`/var/log/patching/` on each host. All logs share a `run_id` for
+correlation. Logs are retained for `patch_log_retention_days` (default 90)
+and pruned automatically at the end of each run.
 
 | File | Contents |
 |---|---|
