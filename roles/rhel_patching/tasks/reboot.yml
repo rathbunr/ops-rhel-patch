@@ -1,5 +1,7 @@
 ---
 # roles/rhel_patching/tasks/reboot.yml
+# Only included when _patch_result.changed is true, so the per-task
+# reboot gating that used to live here is no longer needed.
 
 - name: "Reboot | Check if reboot required"
   ansible.builtin.command:
@@ -33,7 +35,8 @@
 - name: "Reboot | Validate critical services are running"
   ansible.builtin.assert:
     that:
-      - ansible_facts.services[item + '.service'].state == 'running'
+      - ansible_facts.services[item ~ '.service'] is defined
+      - ansible_facts.services[item ~ '.service'].state == 'running'
     fail_msg: >-
       Critical service {{ item }} is not running after reboot
       on {{ inventory_hostname }}
