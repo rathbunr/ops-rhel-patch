@@ -28,3 +28,4 @@ critical_services:
 
 # Audit logging
 patch_log_dir: /var/log/patching
+patch_log_retention_days: 90
