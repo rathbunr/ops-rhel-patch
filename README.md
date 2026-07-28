@@ -12,10 +12,12 @@ patching — see [ops-rhel-satellite-registration](https://github.com/rathbunr/o
 ops-rhel-patch/
 ├── ansible.cfg
 ├── requirements.yml
+├── survey_spec.json                 # AAP survey definition (version controlled)
 ├── .gitignore
 │
 ├── playbooks/
-│   └── patch_hosts.yml              # Site playbook (gates + role invocation)
+│   ├── patch_hosts.yml              # Site playbook (gates + role invocation)
+│   └── post_sync.yml                # Pushes survey_spec.json to the controller
 │
 ├── roles/
 │   └── rhel_patching/
@@ -64,9 +66,6 @@ ansible-playbook playbooks/patch_hosts.yml -e '{"target_hosts":"all","exclude_pa
 
 # Serial batching (10 hosts at a time)
 ansible-playbook playbooks/patch_hosts.yml -e "target_hosts=all patch_serial=10"
-
-# Dry run
-ansible-playbook playbooks/patch_hosts.yml -e target_hosts=all --check
 ```
 
 ---
@@ -101,6 +100,18 @@ The `block/rescue/always` structure guarantees cleanup and summary output
 run even when patching fails. Audit logs are only written when patches
 are applied, keeping subsequent runs idempotent.
 
+### Idempotency
+
+A run against an already-patched fleet produces **zero changes**. Cleanup,
+reboot, and audit log writes are all gated on `_patch_result.changed`, so
+when dnf has nothing to do the entire post-patch path skips. Only
+pre-validation runs, and asserts are non-mutating.
+
+```
+PLAY RECAP
+host-01 : ok=18 changed=0 unreachable=0 failed=0 skipped=8
+```
+
 ### Variables
 
 All defaults are in `roles/rhel_patching/defaults/main.yml`.
@@ -111,7 +122,7 @@ All defaults are in `roles/rhel_patching/defaults/main.yml`.
 | `patch_update_only` | `true` | Prevent accidental new package installs |
 | `enable_autoremove` | `false` | Remove orphaned dependencies |
 | `exclude_packages` | `[]` | Packages/patterns to exclude |
-| `installonly_limit` | `2` | Kernel retention count |
+| `installonly_limit` | `2` | Kernel retention count (applied before patching) |
 | `min_boot_free_mb` | `300` | Minimum free space on /boot |
 | `min_root_free_gb` | `5` | Minimum free space on / |
 | `min_var_free_gb` | `3` | Minimum free space on /var |
@@ -143,17 +154,95 @@ and pruned automatically at the end of each run.
 
 | Job Template | Playbook | Trigger |
 |---|---|---|
-| Patch RHEL Hosts | `playbooks/patch_hosts.yml` | On-demand / scheduled |
-| Security Patch Only | `playbooks/patch_hosts.yml` | On-demand (`patch_security_only=true`) |
+| ops-rhel-patch | `playbooks/patch_hosts.yml` | On-demand / scheduled |
+| ops-rhel-patch-survey-sync | `playbooks/post_sync.yml` | After project sync / on survey change |
 
-### Survey parameters
+### Survey
 
-| Parameter | Type | Description |
-|---|---|---|
-| `target_hosts` | Text | Host group, collection, or search query |
-| `patch_security_only` | Boolean | Security updates only |
-| `exclude_packages` | Text | Comma-separated package exclusions |
-| `patch_serial` | Integer | Hosts to patch simultaneously |
+The survey definition lives in `survey_spec.json` at the repo root so it is
+version controlled alongside the playbook it drives.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `target_hosts` | Text | `all` | Host group, collection, or search query |
+| `patch_security_only` | Choice | `false` | Security updates only |
+| `exclude_packages` | Text | *(blank)* | Comma-separated package exclusions |
+| `patch_serial` | Integer | `0` | Hosts to patch simultaneously (0 = all) |
+| `enable_autoremove` | Choice | `false` | Remove orphaned dependencies |
+
+Thresholds, timeouts, log retention, and `critical_services` are
+deliberately **not** in the survey — they are set-and-forget defaults, and
+exposing them invites per-run drift. Override them in `group_vars` if a
+host group genuinely needs different values.
+
+`exclude_packages` arrives from a survey as a comma-separated **string**,
+but the role expects a **list**. `patch_hosts.yml` normalizes this in
+`pre_tasks`, so `kernel*,podman*` is split into two entries. Passing a real
+list via `-e` on the CLI still works — the parsing task only fires when the
+value is a string.
+
+### Applying the survey
+
+AAP does not read `survey_spec.json` from the repo automatically; surveys
+live in the controller database. `playbooks/post_sync.yml` pushes the file
+to the controller via the API.
+
+Run it as a workflow node after the project sync, or on demand after
+changing the survey:
+
+```bash
+ansible-playbook playbooks/post_sync.yml
+```
+
+Requirements for the job template running it:
+
+- **Inventory** containing the controller host (`aap-01`), reachable with
+  `connection: local`
+- **Credential** of type *Red Hat Ansible Automation Platform*, which
+  injects `CONTROLLER_HOST` and `CONTROLLER_OAUTH_TOKEN` as environment
+  variables. The playbook reads both from the environment — no token is
+  stored in the repo.
+
+Override the target template name if it ever changes:
+
+```bash
+ansible-playbook playbooks/post_sync.yml -e job_template_name="some-other-template"
+```
+
+> **Gateway API path.** On AAP 2.5+ the controller API is proxied by the
+> platform gateway at `/api/controller/v2/`. The `awx.awx` and
+> `ansible.controller` modules hardcode `/api/v2/` onto `controller_host`,
+> which 404s against the gateway — and no value of `controller_host` can
+> produce the correct path, since prefixing it yields
+> `/api/controller/api/v2/`. `post_sync.yml` therefore calls the API
+> directly with `ansible.builtin.uri` against the gateway path. Verify the
+> endpoint with:
+>
+> ```bash
+> curl -s "https://aap-01.rh.corp.ritcsusa.com/api/controller/v2/organizations/" \
+>   -H "Authorization: Bearer <token>" | jq '.results[].name'
+> ```
+
+---
+
+## Operational notes
+
+**Connection user.** Hosts are patched as `svc_ansible_local`, a local
+account rather than a domain one, so patching does not depend on the domain
+being reachable — which matters when a reboot is part of the run. If a host
+was previously touched by a different Ansible account, a stale
+`/tmp/.ansible/tmp` owned by that account (mode 700) will cause
+`UNREACHABLE! Failed to create temporary directory`. Remove it and let
+Ansible recreate it:
+
+```bash
+rm -rf /tmp/.ansible/tmp
+```
+
+**Unreachable hosts bypass rescue.** `block/rescue` catches task failures,
+not lost connections. A host that goes unreachable mid-run is dropped from
+the play entirely and writes no failure log. Check the PLAY RECAP for
+`unreachable=1` rather than relying on the audit trail alone.
 
 ---
 
