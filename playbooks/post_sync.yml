@@ -40,5 +40,6 @@
     - name: "Apply survey to job template"
       awx.awx.job_template:
         name: "{{ job_template_name }}"
+        organization: "RITCSUSA"
         survey_enabled: true
         survey_spec: "{{ _survey_spec }}"
