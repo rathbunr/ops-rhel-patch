@@ -13,7 +13,7 @@
 #   job_template_name        - name of the job template to update
 # ---------------------------------------------------------------------------
 - name: Push survey spec to AAP controller
-  hosts: localhost
+  hosts: aap-01.rh.corp.ritcsusa.com
   connection: local
   gather_facts: false
 
