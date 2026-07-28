@@ -5,11 +5,14 @@
 # Site playbook that invokes the rhel_patching role.
 # Non-RHEL and Satellite server hosts are gated in pre_tasks.
 #
+# Note: --check is not supported. The Satellite and needs-restarting gates
+# rely on ansible.builtin.command, which is skipped in check mode, leaving
+# the registered results undefined.
+#
 # Usage:
 #   ansible-playbook playbooks/patch_hosts.yml -e target_hosts=all
 #   ansible-playbook playbooks/patch_hosts.yml -e target_hosts=RHEL_10_Lab
 #   ansible-playbook playbooks/patch_hosts.yml -e "target_hosts=all patch_security_only=true"
-#   ansible-playbook playbooks/patch_hosts.yml --check
 #
 # AAP Survey parameters:
 #   target_hosts         - Host group, collection, or search query
