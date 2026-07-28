@@ -6,9 +6,11 @@
     name: "*"
     state: latest
     update_only: "{{ patch_update_only }}"
-    security: "{{ patch_security_only }}"
+    security: "{{ patch_security_only | bool }}"
     exclude: "{{ exclude_packages | join(',') if exclude_packages | length > 0 else omit }}"
   register: _patch_result
+  async: "{{ patch_async_timeout }}"
+  poll: "{{ patch_async_poll }}"
 
 - name: "Patch | Capture update count"
   ansible.builtin.set_fact:
