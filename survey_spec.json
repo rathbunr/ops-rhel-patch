@@ -1,0 +1,52 @@
+{
+  "name": "RHEL Patching Survey",
+  "description": "Parameters for the RHEL host patching job template.",
+  "spec": [
+    {
+      "question_name": "Target Hosts",
+      "question_description": "Host group, inventory collection, or host pattern to patch.",
+      "required": true,
+      "type": "text",
+      "variable": "target_hosts",
+      "default": "all",
+      "max": 256
+    },
+    {
+      "question_name": "Security Updates Only",
+      "question_description": "When enabled, only security-classified errata will be applied.",
+      "required": true,
+      "type": "multiplechoice",
+      "variable": "patch_security_only",
+      "choices": ["false", "true"],
+      "default": "false"
+    },
+    {
+      "question_name": "Exclude Packages",
+      "question_description": "Comma-separated list of packages or glob patterns to exclude (e.g. kernel*,podman*). Leave blank for no exclusions.",
+      "required": false,
+      "type": "text",
+      "variable": "exclude_packages",
+      "default": "",
+      "max": 1024
+    },
+    {
+      "question_name": "Serial Batch Size",
+      "question_description": "Number of hosts to patch simultaneously. 0 patches all hosts in parallel.",
+      "required": true,
+      "type": "integer",
+      "variable": "patch_serial",
+      "default": 0,
+      "min": 0,
+      "max": 500
+    },
+    {
+      "question_name": "Remove Orphaned Dependencies",
+      "question_description": "Run dnf autoremove after patching to clean up orphaned packages.",
+      "required": true,
+      "type": "multiplechoice",
+      "variable": "enable_autoremove",
+      "choices": ["false", "true"],
+      "default": "false"
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+---
+# ---------------------------------------------------------------------------
+# Post-sync: Push survey_spec.json to the AAP job template
+#
+# Run this as a workflow node after the project sync, or manually:
+#   ansible-playbook playbooks/post_sync.yml
+#
+# Required credentials (AAP credential type: Red Hat Ansible Automation Platform):
+#   CONTROLLER_HOST          - injected as controller_host
+#   CONTROLLER_OAUTH_TOKEN   - injected as controller_oauthtoken
+#
+# Required extra variable:
+#   job_template_name        - name of the job template to update
+# ---------------------------------------------------------------------------
+- name: Push survey spec to AAP controller
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    survey_spec_path: "{{ playbook_dir }}/../survey_spec.json"
+    job_template_name: "{{ job_template_name | default('Patch RHEL Hosts') }}"
+
+  tasks:
+
+    - name: "Verify survey_spec.json exists"
+      ansible.builtin.stat:
+        path: "{{ survey_spec_path }}"
+      register: _survey_file
+
+    - name: "Fail if survey_spec.json is missing"
+      ansible.builtin.fail:
+        msg: "survey_spec.json not found at {{ survey_spec_path }}"
+      when: not _survey_file.stat.exists
+
+    - name: "Load survey spec"
+      ansible.builtin.set_fact:
+        _survey_spec: "{{ lookup('file', survey_spec_path) | from_json }}"
+
+    - name: "Apply survey to job template"
+      awx.awx.job_template:
+        name: "{{ job_template_name }}"
+        survey_enabled: true
+        survey_spec: "{{ _survey_spec }}"
