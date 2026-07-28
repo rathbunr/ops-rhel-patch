@@ -6,6 +6,14 @@
     name: yum-utils
     state: present
 
+- name: "Pre-patch | Enforce kernel retention limit"
+  community.general.ini_file:
+    path: /etc/dnf/dnf.conf
+    section: main
+    option: installonly_limit
+    value: "{{ installonly_limit }}"
+    no_extra_spaces: true
+
 - name: "Pre-patch | Detect mount points"
   ansible.builtin.set_fact:
     _boot_mount: >-
@@ -49,13 +57,3 @@
   ansible.builtin.set_fact:
     _pre_patch_kernel: "{{ ansible_kernel }}"
     _pre_patch_pkg_count: "{{ ansible_facts.packages | length }}"
-
-- name: "Pre-patch | Write pre-patch audit log"
-  ansible.builtin.template:
-    src: audit_log.json.j2
-    dest: "{{ patch_log_dir }}/pre-patch-{{ _patch_run_id }}.json"
-    owner: root
-    group: root
-    mode: "0640"
-  vars:
-    _log_phase: "pre-patch"
