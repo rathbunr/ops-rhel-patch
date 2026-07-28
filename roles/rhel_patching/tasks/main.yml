@@ -118,7 +118,7 @@
           - "Rebooted:          {{ _reboot_required | default(false) }}"
           - "Security only:     {{ patch_security_only }}"
           - "Packages before:   {{ _pre_patch_pkg_count | default('N/A') }}"
-          - "Packages after:    {{ _post_patch_pkg_count | default('N/A') }}"
+          - "Packages after:     {{ _post_patch_pkg_count | default(_pre_patch_pkg_count) | default('N/A') }}"
           - "Packages updated:  {{ _packages_updated | default(0) }}"
           - "Exclusions:        {{ exclude_packages | join(', ') if exclude_packages | length > 0 else 'None' }}"
           - "============================================"
