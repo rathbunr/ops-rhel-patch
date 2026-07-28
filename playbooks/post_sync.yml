@@ -43,3 +43,4 @@
         organization: "RITCSUSA"
         survey_enabled: true
         survey_spec: "{{ _survey_spec }}"
+        controller_host: "https://aap-01.rh.corp.ritcsusa.com/api/controller"
