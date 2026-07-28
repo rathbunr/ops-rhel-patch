@@ -17,20 +17,6 @@
     group: root
     mode: "0750"
 
-- name: "Init | Clean previous patching logs"
-  ansible.builtin.find:
-    paths: "{{ patch_log_dir }}"
-    patterns: "*.json"
-  register: _old_logs
-
-- name: "Init | Remove previous patching logs"
-  ansible.builtin.file:
-    path: "{{ item.path }}"
-    state: absent
-  loop: "{{ _old_logs.files }}"
-  loop_control:
-    label: "{{ item.path | basename }}"
-
 - name: "Patching lifecycle"
   block:
 
@@ -40,11 +26,15 @@
     - name: "Patch"
       ansible.builtin.include_tasks: patch.yml
 
-    - name: "Cleanup"
-      ansible.builtin.include_tasks: cleanup.yml
+    - name: "Post-patch"
+      when: _patch_result.changed
+      block:
 
-    - name: "Reboot"
-      ansible.builtin.include_tasks: reboot.yml
+        - name: "Cleanup"
+          ansible.builtin.include_tasks: cleanup.yml
+
+        - name: "Reboot"
+          ansible.builtin.include_tasks: reboot.yml
 
   rescue:
 
@@ -72,12 +62,23 @@
     - name: "Always | Refresh package facts for final count"
       ansible.builtin.package_facts:
         manager: auto
-      when: _patch_status == 'success'
+      when: _patch_status == 'success' and (_patch_result.changed | default(false))
 
     - name: "Always | Capture final package count"
       ansible.builtin.set_fact:
         _post_patch_pkg_count: "{{ ansible_facts.packages | length }}"
-      when: _patch_status == 'success'
+      when: _patch_status == 'success' and (_patch_result.changed | default(false))
+
+    - name: "Always | Write pre-patch audit log"
+      ansible.builtin.template:
+        src: audit_log.json.j2
+        dest: "{{ patch_log_dir }}/pre-patch-{{ _patch_run_id }}.json"
+        owner: root
+        group: root
+        mode: "0640"
+      vars:
+        _log_phase: "pre-patch"
+      when: _patch_status == 'success' and (_patch_result.changed | default(false))
 
     - name: "Always | Write completion log"
       ansible.builtin.template:
@@ -88,7 +89,23 @@
         mode: "0640"
       vars:
         _log_phase: "complete"
-      when: _patch_status == 'success'
+      when: _patch_status == 'success' and (_patch_result.changed | default(false))
+
+    - name: "Always | Find old audit logs for retention"
+      ansible.builtin.find:
+        paths: "{{ patch_log_dir }}"
+        patterns: "*.json"
+        age: "{{ patch_log_retention_days }}d"
+      register: _old_logs
+
+    - name: "Always | Prune audit logs beyond retention"
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ _old_logs.files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+      when: _old_logs.files | length > 0
 
     - name: "Always | Display final summary"
       ansible.builtin.debug:
