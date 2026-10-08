@@ -21,6 +21,7 @@
   "packages_after": {{ _post_patch_pkg_count | default(_pre_patch_pkg_count) }},
   "packages_updated": {{ _packages_updated | default(0) }},
   "exclusions": {{ exclude_packages | to_json }},
+  "firmware": {{ _firmware_status | default('not requested') | to_json }},
   "status": "{{ _patch_status | default('success') }}"
 {% endif %}
 }

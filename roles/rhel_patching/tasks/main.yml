@@ -26,15 +26,23 @@
     - name: "Patch"
       ansible.builtin.include_tasks: patch.yml
 
-    - name: "Post-patch"
+    - name: "Firmware"
+      ansible.builtin.include_tasks: firmware.yml
+      when: patch_firmware_platform != 'none'
+
+    - name: "Cleanup"
+      ansible.builtin.include_tasks: cleanup.yml
       when: _patch_result.changed
-      block:
 
-        - name: "Cleanup"
-          ansible.builtin.include_tasks: cleanup.yml
+    - name: "Record whether the run changed the host"
+      ansible.builtin.set_fact:
+        _run_changed: >-
+          {{ _patch_result.changed
+             or (_firmware_applied | default([]) | length > 0) }}
 
-        - name: "Reboot"
-          ansible.builtin.include_tasks: reboot.yml
+    - name: "Reboot"
+      ansible.builtin.include_tasks: reboot.yml
+      when: _run_changed | bool or patch_reboot == 'always'
 
   rescue:
 
@@ -62,12 +70,12 @@
     - name: "Always | Refresh package facts for final count"
       ansible.builtin.package_facts:
         manager: auto
-      when: _patch_status == 'success' and (_patch_result.changed | default(false))
+      when: _patch_status == 'success' and (_run_changed | default(false) | bool)
 
     - name: "Always | Capture final package count"
       ansible.builtin.set_fact:
         _post_patch_pkg_count: "{{ ansible_facts.packages | length }}"
-      when: _patch_status == 'success' and (_patch_result.changed | default(false))
+      when: _patch_status == 'success' and (_run_changed | default(false) | bool)
 
     - name: "Always | Write pre-patch audit log"
       ansible.builtin.template:
@@ -78,7 +86,7 @@
         mode: "0640"
       vars:
         _log_phase: "pre-patch"
-      when: _patch_status == 'success' and (_patch_result.changed | default(false))
+      when: _patch_status == 'success' and (_run_changed | default(false) | bool)
 
     - name: "Always | Write completion log"
       ansible.builtin.template:
@@ -89,7 +97,7 @@
         mode: "0640"
       vars:
         _log_phase: "complete"
-      when: _patch_status == 'success' and (_patch_result.changed | default(false))
+      when: _patch_status == 'success' and (_run_changed | default(false) | bool)
 
     - name: "Always | Find old audit logs for retention"
       ansible.builtin.find:
@@ -121,4 +129,5 @@
           - "Packages after:     {{ _post_patch_pkg_count | default(_pre_patch_pkg_count) | default('N/A') }}"
           - "Packages updated:  {{ _packages_updated | default(0) }}"
           - "Exclusions:        {{ exclude_packages | join(', ') if exclude_packages | length > 0 else 'None' }}"
+          - "Firmware:          {{ _firmware_status | default('not requested') }}"
           - "============================================"

@@ -1,0 +1,44 @@
+---
+# roles/rhel_patching/tasks/firmware_verify.yml
+# After the reboot: fail the host if fwupd still offers the release that was
+# just applied (the flash did not take). A newer release of the same device
+# is a new update, not a failure.
+
+- name: "Firmware | List offered updates after reboot"
+  ansible.builtin.command:
+    cmd: fwupdmgr get-updates --json
+  register: _fw_after
+  changed_when: false
+  failed_when: _fw_after.rc not in [0, 2]
+
+- name: "Firmware | Find applied releases still offered"
+  ansible.builtin.set_fact:
+    _firmware_not_taken: >-
+      {%- set offered = [] -%}
+      {%- if _fw_after.rc == 0 -%}
+      {%- for d in (_fw_after.stdout | from_json).get('Devices', []) -%}
+      {%- for r in d.get('Releases', []) -%}
+      {%- set _ = offered.append(d.DeviceId ~ '@' ~ (r.Version | default(''))) -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {%- endif -%}
+      {%- set out = [] -%}
+      {%- for a in _firmware_applied -%}
+      {%- if (a.id ~ '@' ~ a.version) in offered -%}
+      {%- set _ = out.append(a.name ~ ' ' ~ a.version) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: "Firmware | Verify the applied firmware took"
+  ansible.builtin.assert:
+    that:
+      - _firmware_not_taken | length == 0
+    fail_msg: >-
+      Firmware still offered after the reboot on {{ inventory_hostname }}:
+      {{ _firmware_not_taken | join(', ') }}. The update did not take.
+
+- name: "Firmware | Record the verified result"
+  ansible.builtin.set_fact:
+    _firmware_status: >-
+      applied and verified: {{ _firmware_applied | map(attribute='name') | join(', ') }}

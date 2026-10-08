@@ -1,3 +1,6 @@
 ---
 collections:
+  # Pinned to the execution environment's version (custom_enterprise_ee) so a
+  # project sync cannot load a different one over it.
   - name: community.general
+    version: "13.3.0"

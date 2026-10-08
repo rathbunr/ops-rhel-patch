@@ -1,0 +1,54 @@
+---
+# roles/rhel_patching/tasks/firmware.yml
+# Optional firmware updates through fwupd (patch_firmware_platform != none).
+# The platform and fwupd were checked in pre_validate.yml before any change.
+# Any error fails the host through the role's rescue path; a flash that did
+# not take is caught after the reboot by firmware_verify.yml.
+#
+# fwupdmgr 2.0.19 (RHEL 9.8 and 10.2): `get-updates --json` lists offered
+# devices with their releases; `update <DeviceId> --assume-yes
+# --no-reboot-check` applies one without prompting or rebooting (the role
+# reboots). rc 2 for "nothing to do" is unverified; it is accepted here and
+# proven on the first run (docs/UAT.md U6 in infra-satellite-config).
+
+- name: "Firmware | List offered updates"
+  ansible.builtin.command:
+    cmd: fwupdmgr get-updates --json
+  register: _fw_offer
+  changed_when: false
+  failed_when: _fw_offer.rc not in [0, 2]
+
+- name: "Firmware | Record offered updates"
+  ansible.builtin.set_fact:
+    _firmware_offered: >-
+      {%- set out = [] -%}
+      {%- if _fw_offer.rc == 0 -%}
+      {%- for d in (_fw_offer.stdout | from_json).get('Devices', []) -%}
+      {%- if d.get('Releases') -%}
+      {%- set _ = out.append({'id': d.DeviceId, 'name': d.Name,
+            'version': d.Releases[0].Version | default('')}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endif -%}
+      {{ out }}
+
+- name: "Firmware | Apply"
+  ansible.builtin.command:
+    argv:
+      - fwupdmgr
+      - update
+      - "{{ item.id }}"
+      - --assume-yes
+      - --no-reboot-check
+  loop: "{{ _firmware_offered }}"
+  loop_control:
+    label: "{{ item.name }} {{ item.version }}"
+  changed_when: true
+
+- name: "Firmware | Record the result"
+  ansible.builtin.set_fact:
+    _firmware_applied: "{{ _firmware_offered }}"
+    _firmware_status: >-
+      {{ ('applied, pending verification after reboot: '
+          ~ (_firmware_offered | map(attribute='name') | join(', ')))
+         if _firmware_offered | length > 0 else 'none pending' }}

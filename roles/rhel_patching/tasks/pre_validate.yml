@@ -1,10 +1,36 @@
 ---
 # roles/rhel_patching/tasks/pre_validate.yml
 
-- name: "Pre-patch | Ensure needs-restarting is available"
-  ansible.builtin.dnf:
-    name: yum-utils
-    state: present
+- name: "Pre-patch | Validate run options"
+  ansible.builtin.assert:
+    that:
+      - patch_reboot in ['needed', 'always']
+      - patch_firmware_platform == 'none'
+        or patch_firmware_platform in patch_firmware_platforms
+    fail_msg: >-
+      patch_reboot must be needed or always (got {{ patch_reboot }});
+      patch_firmware_platform must be none or one of
+      {{ patch_firmware_platforms.keys() | list }} (got {{ patch_firmware_platform }})
+
+- name: "Pre-patch | Detect the platform"
+  ansible.builtin.command:
+    cmd: systemd-detect-virt
+  register: _detect_virt
+  changed_when: false
+  failed_when: _detect_virt.stdout | length == 0
+  when: patch_firmware_platform != 'none'
+
+- name: "Pre-patch | Refuse firmware updates on another platform"
+  ansible.builtin.assert:
+    that:
+      - _detect_virt.stdout in patch_firmware_platforms[patch_firmware_platform]
+    fail_msg: >-
+      Firmware platform '{{ patch_firmware_platform }}' was requested, but
+      systemd-detect-virt reports '{{ _detect_virt.stdout }}' on
+      {{ inventory_hostname }} (accepted:
+      {{ patch_firmware_platforms[patch_firmware_platform] | join(', ') }}).
+      Nothing was changed on this host.
+  when: patch_firmware_platform != 'none'
 
 - name: "Pre-patch | Enforce kernel retention limit"
   community.general.ini_file:
@@ -52,6 +78,15 @@
 - name: "Pre-patch | Gather installed package facts"
   ansible.builtin.package_facts:
     manager: auto
+
+- name: "Pre-patch | Require fwupd for firmware updates"
+  ansible.builtin.assert:
+    that:
+      - "'fwupd' in ansible_facts.packages"
+    fail_msg: >-
+      Firmware updates were requested but fwupd is not installed on
+      {{ inventory_hostname }}. Nothing was changed on this host.
+  when: patch_firmware_platform != 'none'
 
 - name: "Pre-patch | Capture pre-patch state"
   ansible.builtin.set_fact:

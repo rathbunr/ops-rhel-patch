@@ -25,9 +25,11 @@ ops-rhel-patch/
 │       ├── meta/main.yml            # Role metadata + dependencies
 │       ├── tasks/
 │       │   ├── main.yml             # Orchestrator (block/rescue/always)
-│       │   ├── pre_validate.yml     # Disk space, kernel retention, package state
+│       │   ├── pre_validate.yml     # Run options, platform gate, disk space, kernel retention, package state
 │       │   ├── patch.yml            # dnf update
 │       │   ├── cleanup.yml          # Autoremove, cache clean
+│       │   ├── firmware.yml         # Optional fwupd updates (patch_firmware_platform)
+│       │   ├── firmware_verify.yml  # After reboot: applied firmware no longer offered
 │       │   └── reboot.yml           # Reboot detection + service validation
 │       └── templates/
 │           └── audit_log.json.j2    # Single template for all audit phases
@@ -66,6 +68,9 @@ ansible-playbook playbooks/patch_hosts.yml -e '{"target_hosts":"all","exclude_pa
 
 # Serial batching (10 hosts at a time)
 ansible-playbook playbooks/patch_hosts.yml -e "target_hosts=all patch_serial=10"
+
+# Build workflow: always reboot, and apply firmware on Hyper-V VMs
+ansible-playbook playbooks/patch_hosts.yml -e "target_hosts=<host> patch_reboot=always patch_firmware_platform=vm"
 ```
 
 ---
@@ -78,14 +83,18 @@ ansible-playbook playbooks/patch_hosts.yml -e "target_hosts=all patch_serial=10"
 Init (run timestamp, log directory)
     ↓
 block:
-  Pre-validate (disk space, kernel retention, package state)
+  Pre-validate (run options, platform gate, disk space, kernel retention,
+                package state; a refused platform stops here, unchanged)
       ↓
   Patch (dnf update, record updated packages)
       ↓
-  Post-patch (only when patches were applied):
-      Cleanup (autoremove, cache clean)
-          ↓
-      Reboot (needs-restarting detection, conditional reboot, service validation)
+  Firmware (only when patch_firmware_platform is not none)
+      ↓
+  Cleanup (only when packages changed: autoremove, cache clean)
+      ↓
+  Reboot (when packages or firmware changed, or patch_reboot=always:
+          dnf needs-restarting detection, reboot, firmware check,
+          service validation)
 rescue:
   Record failure → audit log → fail with details
 always:
@@ -102,10 +111,15 @@ are applied, keeping subsequent runs idempotent.
 
 ### Idempotency
 
-A run against an already-patched fleet produces **zero changes**. Cleanup,
-reboot, and audit log writes are all gated on `_patch_result.changed`, so
-when dnf has nothing to do the entire post-patch path skips. Only
-pre-validation runs, and asserts are non-mutating.
+A run against an already-patched fleet produces **zero changes** with the
+defaults. Cleanup, reboot, and audit log writes are all gated on whether the
+run changed the host (packages or firmware), so when there is nothing to do
+the post-patch path skips. Only pre-validation runs, and asserts are
+non-mutating. `patch_reboot=always` reboots on every run by design.
+
+`installonly_limit` in `/etc/dnf/dnf.conf` is owned by this role (kernel
+retention, two kernels so the previous one stays bootable). Hardening
+content sets other keys in the same file; nothing else sets this one.
 
 ```
 PLAY RECAP
@@ -126,6 +140,9 @@ All defaults are in `roles/rhel_patching/defaults/main.yml`.
 | `min_boot_free_mb` | `300` | Minimum free space on /boot |
 | `min_root_free_gb` | `5` | Minimum free space on / |
 | `min_var_free_gb` | `3` | Minimum free space on /var |
+| `patch_reboot` | `needed` | `needed`: reboot when packages changed and `dnf needs-restarting -r` asks; `always`: every run |
+| `patch_firmware_platform` | `none` | `none` skips firmware; a key of `patch_firmware_platforms` applies fwupd updates after the platform check |
+| `patch_firmware_platforms` | `{vm: [microsoft]}` | Accepted `systemd-detect-virt` values per platform; extend here for other hypervisors or bare metal (`none`) |
 | `patch_reboot_timeout` | `1800` | Seconds to wait for reboot |
 | `patch_reboot_delay` | `30` | Seconds to wait after reboot before validation |
 | `critical_services` | `[sshd, chronyd]` | Services validated post-reboot |
@@ -143,7 +160,7 @@ and pruned automatically at the end of each run.
 |---|---|
 | `pre-patch-*.json` | Kernel, package count, disk space |
 | `packages-updated-*.json` | List of packages updated |
-| `patch-complete-*.json` | Final state, kernel delta, reboot status |
+| `patch-complete-*.json` | Final state, kernel delta, reboot status, firmware status |
 | `patch-failure-*.json` | Error details (failure only) |
 
 ---
@@ -169,6 +186,8 @@ version controlled alongside the playbook it drives.
 | `exclude_packages` | Text | *(blank)* | Comma-separated package exclusions |
 | `patch_serial` | Integer | `0` | Hosts to patch simultaneously (0 = all) |
 | `enable_autoremove` | Choice | `false` | Remove orphaned dependencies |
+| `patch_reboot` | Choice | `needed` | `needed` or `always` |
+| `patch_firmware_platform` | Choice | `none` | `none` or `vm` |
 
 Thresholds, timeouts, log retention, and `critical_services` are
 deliberately **not** in the survey — they are set-and-forget defaults, and
@@ -227,17 +246,21 @@ ansible-playbook playbooks/post_sync.yml -e job_template_name="some-other-templa
 
 ## Operational notes
 
-**Connection user.** Hosts are patched as `svc_ansible_local`, a local
-account rather than a domain one, so patching does not depend on the domain
-being reachable — which matters when a reboot is part of the run. If a host
-was previously touched by a different Ansible account, a stale
-`/tmp/.ansible/tmp` owned by that account (mode 700) will cause
-`UNREACHABLE! Failed to create temporary directory`. Remove it and let
-Ansible recreate it:
+**Connection user.** Hosts are patched as `svc_ansible_linux`, an IdM
+account with key-only SSH (AAP credential "Service Ansible Linux"). After a
+reboot the connection works once SSSD is online; the reboot module keeps
+retrying until `patch_reboot_timeout`. The remote temporary directory on the
+hardened images is `/opt/ansible/tmp` (mode 1777), because `/tmp` and
+`/var/tmp` are mounted `noexec`.
 
-```bash
-rm -rf /tmp/.ansible/tmp
-```
+**Firmware.** `patch_firmware_platform=vm` checks the platform with
+`systemd-detect-virt` before any change and fails a host that is not a VM of
+an accepted hypervisor, so a mistargeted run stops with nothing altered. An
+offered update is applied with `fwupdmgr update <device> --assume-yes
+--no-reboot-check`, the host reboots, and the run fails if fwupd still
+offers the release it just applied. On Hyper-V Gen2 the usual offer is the
+UEFI Secure Boot revocation list (dbx) from the local `vendor-directory`
+remote; take a VM checkpoint before the first firmware run on a VM.
 
 **Unreachable hosts bypass rescue.** `block/rescue` catches task failures,
 not lost connections. A host that goes unreachable mid-run is dropped from
@@ -255,7 +278,7 @@ the play entirely and writes no failure log. Check the PLAY RECAP for
 ## Validated against
 
 - Red Hat Satellite 6.19
-- RHEL 10.2, 9.8, 8.10
+- RHEL 10.2, 9.8, 8.10 (firmware step: RHEL 9.8 and 10.2, fwupd 2.0.19)
 - Ansible Core 2.16
 - AAP 2.7 (containerized)
 

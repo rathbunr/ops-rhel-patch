@@ -23,8 +23,24 @@ min_var_free_gb: 3
 installonly_limit: 2
 
 # Reboot
+# needed: reboot only when packages changed and `dnf needs-restarting -r`
+#   asks for it (fleet default).
+# always: reboot every run, also when nothing changed (build workflow: the
+#   remediation run before it needs a reboot too).
+patch_reboot: needed
 patch_reboot_timeout: 1800
 patch_reboot_delay: 30
+
+# Firmware updates (fwupd), off by default.
+# patch_firmware_platform names the platform the operator says the hosts are;
+# the run checks it against `systemd-detect-virt` before any change and fails
+# the host on a mismatch. Each platform lists the detect-virt values it
+# accepts; add another hypervisor (e.g. kvm) or a physical platform
+# (`none`, detect-virt's answer on bare metal) here, not in the tasks.
+patch_firmware_platform: none
+patch_firmware_platforms:
+  vm:
+    - microsoft
 
 # Post-reboot service validation
 critical_services:

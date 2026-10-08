@@ -1,18 +1,21 @@
 ---
 # roles/rhel_patching/tasks/reboot.yml
-# Only included when _patch_result.changed is true, so the per-task
-# reboot gating that used to live here is no longer needed.
+# Included when packages changed, firmware was applied, or patch_reboot is
+# always (main.yml). `dnf needs-restarting` is in dnf-plugins-core, which the
+# images already carry; rc 1 means a reboot is needed.
 
 - name: "Reboot | Check if reboot required"
   ansible.builtin.command:
-    cmd: needs-restarting -r
+    cmd: dnf needs-restarting -r
   register: _reboot_check
   failed_when: _reboot_check.rc not in [0, 1]
   changed_when: false
 
 - name: "Reboot | Set reboot fact"
   ansible.builtin.set_fact:
-    _reboot_required: "{{ _reboot_check.rc == 1 }}"
+    _reboot_required: >-
+      {{ _reboot_check.rc == 1 or patch_reboot == 'always'
+         or (_firmware_applied | default([]) | length > 0) }}
 
 - name: "Reboot | Reboot if required"
   ansible.builtin.reboot:
@@ -31,6 +34,10 @@
 - name: "Reboot | Gather service facts"
   ansible.builtin.service_facts:
   when: _reboot_required | bool
+
+- name: "Reboot | Verify applied firmware is no longer offered"
+  ansible.builtin.include_tasks: firmware_verify.yml
+  when: _firmware_applied | default([]) | length > 0
 
 - name: "Reboot | Validate critical services are running"
   ansible.builtin.assert:
