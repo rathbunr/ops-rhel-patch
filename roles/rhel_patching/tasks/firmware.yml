@@ -8,8 +8,10 @@
 # fwupdmgr 2.0.19 (RHEL 9.8 and 10.2): `get-updates --json` lists offered
 # devices with their releases; `update <DeviceId> --assume-yes
 # --no-reboot-check` applies one without prompting or rebooting (the role
-# reboots). rc 2 for "nothing to do" is unverified; it is accepted here and
-# proven on the first run (docs/UAT.md U6 in infra-satellite-config).
+# reboots). `get-updates --json` returns rc 0 both when an update is offered
+# and when none is pending (both majors, 2026-10-09, AAP 5840). rc 2 is still
+# tolerated and yields an empty list; no fwupd release used here was seen to
+# return it.
 
 - name: "Firmware | List offered updates"
   ansible.builtin.command:
